@@ -1,9 +1,15 @@
-/** Read side of the `lyceum` CouchDB database (build step 2's credentials).
+/** The `lyceum` CouchDB database (build step 2's credentials).
  *
  * The app holds a database admin of `lyceum` and nothing else, injected by the
  * SealedSecret in `lyceum-config` as COUCHDB_URL / COUCHDB_USER /
- * COUCHDB_PASSWORD / COUCHDB_DB. Nothing here writes: the vault is the source
- * of truth and `tools.lyceum_import` in agora-persona-runner is the only writer.
+ * COUCHDB_PASSWORD / COUCHDB_DB.
+ *
+ * **Course content is read-only here and stays that way**: the vault is the
+ * source of truth for chapters and sources, and `tools.lyceum_import` in
+ * agora-persona-runner is their only writer. `put` exists for the app's own
+ * state -- a discussion row is born in the app and has no vault original, so
+ * there is nothing for a cycle to overwrite (the spec's "CouchDB for derived
+ * state only"). Nothing calls it with a `course:`/`chapter:`/`source:` id.
  */
 
 export type Doc = Record<string, any>;
@@ -11,6 +17,7 @@ export type Doc = Record<string, any>;
 export interface Couch {
   allDocs(prefix: string): Promise<Doc[]>;
   get(id: string): Promise<Doc | null>;
+  put(doc: Doc): Promise<Doc>;
 }
 
 function auth(): string {
@@ -37,6 +44,16 @@ export const httpCouch: Couch = {
     if (!res.ok) throw new Error(`CouchDB ${res.status} on ${prefix}`);
     const body = (await res.json()) as { rows: { doc: Doc }[] };
     return body.rows.map((r) => r.doc);
+  },
+  async put(doc: Doc) {
+    const res = await fetch(`${base()}/${encodeURIComponent(doc._id)}`, {
+      method: "PUT",
+      headers: { Authorization: auth(), "content-type": "application/json" },
+      body: JSON.stringify(doc),
+    });
+    if (!res.ok) throw new Error(`CouchDB ${res.status} writing ${doc._id}`);
+    const body = (await res.json()) as { rev: string };
+    return { ...doc, _rev: body.rev };
   },
   async get(id: string) {
     const res = await fetch(`${base()}/${encodeURIComponent(id)}`, {

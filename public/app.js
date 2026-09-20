@@ -1,7 +1,7 @@
 /* Lyceum PWA shell -- build step 4 of projects/sokrates/projects/lyceum/lyceum.md.
    Preact + htm, buildless, per ADR 0010. The Material 3 tokens and the four-tab
    layout are the approved demo's, ported onto the real courses in CouchDB. */
-const { html, render, useState, useEffect } = window.htmPreact;
+const { html, render, useState, useEffect, useRef } = window.htmPreact;
 
 const I = (n, cls = '') => html`<span class=${'msym ' + cls}>${n}</span>`;
 
@@ -129,6 +129,119 @@ function Chapter({ id }) {
       what="GRADE marks in the right margin need claim atoms, which are not extracted yet." />`;
 }
 
+const postJSON = (url, body) =>
+  fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `${r.status} from ${url}`);
+    return data;
+  });
+
+/* One open discussion with Aristoteles -- build step 5.
+   Agora holds the transcript, so this polls rather than storing messages: the
+   reply is written by a model somewhere else and arrives whenever it arrives.
+   Polling stops as soon as it lands, because `waiting` is false once the last
+   message is his rather than Edvard's. */
+function Discussion({ id, onTitle }) {
+  const [state, setState] = useState({ loading: true });
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const end = useRef(null);
+
+  const load = () =>
+    getJSON(`/api/discussions/${encodeURIComponent(id)}/messages`).then(
+      (data) => { setState({ data }); onTitle && onTitle(data.discussion.title); },
+      (err) => setState({ error: String(err.message || err) }),
+    );
+
+  useEffect(() => { load(); }, [id]);
+
+  useEffect(() => {
+    if (!state.data || !state.data.waiting) return;
+    const t = setTimeout(load, 3000);
+    return () => clearTimeout(t);
+  }, [state.data]);
+
+  useEffect(() => { end.current && end.current.scrollIntoView({ block: 'end' }); }, [state.data]);
+
+  const send = (e) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    postJSON(`/api/discussions/${encodeURIComponent(id)}/messages`, { text }).then(
+      () => { setDraft(''); setSending(false); load(); },
+      (err) => { setSending(false); setState((s) => ({ ...s, error: String(err.message || err) })); },
+    );
+  };
+
+  if (state.loading) return html`<${Loading} />`;
+  if (state.error && !state.data) return html`<${Failed} error=${state.error} />`;
+  const { messages, waiting } = state.data;
+  return html`
+    <div class="chat">
+      ${messages.map((m, n) => html`
+        <div key=${n} class=${'bub ' + (m.sender === 'Edvard' ? 'e' : 'a')}>${m.text}</div>`)}
+      ${waiting ? html`<div class="bub a supporting">Aristoteles is thinking…</div>` : null}
+      <div ref=${end}></div>
+    </div>
+    ${state.error ? html`<p class="supporting">${state.error}</p>` : null}
+    <form class="composer" onSubmit=${send}>
+      <input value=${draft} disabled=${sending} placeholder="Ask Aristoteles"
+             onInput=${(e) => setDraft(e.target.value)} />
+      <button class="iconbtn" type="submit" aria-label="Send">${I('send')}</button>
+    </form>`;
+}
+
+/* The global Aristoteles tab: per-topic threads, newest first. The spec's own
+   reason for a list rather than one endless chat -- "in those chats I ask Ari
+   to create a new workshop for me or create a new course". */
+function Discussions({ onOpen }) {
+  const [state, setState] = useState({ loading: true });
+  const [starting, setStarting] = useState(false);
+
+  const load = () =>
+    getJSON('/api/discussions').then(
+      (data) => setState({ data }),
+      (err) => setState({ error: String(err.message || err) }),
+    );
+  useEffect(() => { load(); }, []);
+
+  const start = () => {
+    const title = prompt('What do you want to talk about?');
+    if (!title || !title.trim() || starting) return;
+    setStarting(true);
+    postJSON('/api/discussions', { title: title.trim() }).then(
+      (data) => { setStarting(false); onOpen(data.discussion.id); },
+      (err) => { setStarting(false); setState((s) => ({ ...s, error: String(err.message || err) })); },
+    );
+  };
+
+  if (state.loading) return html`<${Loading} />`;
+  if (state.error && !state.data) return html`<${Failed} error=${state.error} />`;
+  const list = state.data.discussions;
+  return html`
+    ${state.error ? html`<${Failed} error=${state.error} />` : null}
+    <div class="sectitle">Threads</div>
+    ${list.length
+      ? list.map((d) => html`
+          <div class="card tap" key=${d.id} onClick=${() => onOpen(d.id)}>
+            <div class="row">
+              <div class="avatar" style=${{ background: '#6750A4' }}>${I('forum')}</div>
+              <div class="grow"><h3>${d.title}</h3>
+                <p class="supporting">${d.createdAt ? d.createdAt.slice(0, 16).replace('T', ' ') : ''}</p>
+              </div>
+              ${I('chevron_right', 'chev')}
+            </div>
+          </div>`)
+      : html`<div class="card out"><h3>No threads yet</h3>
+          <p class="supporting">Start one and Aristoteles answers in it.</p></div>`}
+    <button class="fab" onClick=${start} aria-label="New thread">${I(starting ? 'hourglass_empty' : 'add')}</button>`;
+}
+
 function Home({ onOpen }) {
   const { loading, error, data } = useJSON('/api/courses');
   if (loading) return html`<${Loading} />`;
@@ -148,10 +261,15 @@ function App() {
   const [tab, setTab] = useState('home');
   const [course, setCourse] = useState(null);
   const [chapter, setChapter] = useState(null);
+  const [discussion, setDiscussion] = useState(null);
+  const [discussionTitle, setDiscussionTitle] = useState('Aristoteles');
 
   const openCourse = (slug) => { setCourse(slug); setChapter(null); };
-  const back = () => (chapter ? setChapter(null) : setCourse(null));
-  const inDetail = Boolean(course);
+  const back = () => {
+    if (discussion) return setDiscussion(null);
+    return chapter ? setChapter(null) : setCourse(null);
+  };
+  const inDetail = Boolean(course) || Boolean(discussion);
 
   let title = TABS.find((t) => t.id === tab).label;
   let body;
@@ -162,9 +280,11 @@ function App() {
   else if (tab === 'workshop')
     body = html`<${NotBuiltYet} title="The workshop is not built yet" step="10"
       what="DSRM stage stepper, tool rack and bench log." />`;
-  else
-    body = html`<${NotBuiltYet} title="Aristoteles is not here yet" step="5"
-      what="The tutor persona and its per-topic threads." />`;
+  else if (discussion) {
+    title = discussionTitle;
+    body = html`<${Discussion} id=${discussion} onTitle=${setDiscussionTitle} />`;
+  }
+  else body = html`<${Discussions} onOpen=${(id) => { setDiscussionTitle('Aristoteles'); setDiscussion(id); }} />`;
 
   return html`
     <header class=${'appbar' + (inDetail ? ' hasback' : '')}>
@@ -175,7 +295,7 @@ function App() {
     <nav class="navbar">
       ${TABS.map((t) => html`
         <button key=${t.id} class=${t.id === tab && !inDetail ? 'on' : ''}
-                onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); }}>
+                onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); setDiscussion(null); }}>
           <span class="ind">${I(t.icon)}</span>${t.label}
         </button>`)}
     </nav>`;
