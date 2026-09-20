@@ -61,6 +61,9 @@ const makeStub = (docs: Doc[] = [...DOCS]): Couch => ({
   async allDocs(prefix) {
     return docs.filter((d) => d._id.startsWith(prefix));
   },
+  async ids(prefix) {
+    return docs.filter((d) => d._id.startsWith(prefix)).map((d) => d._id);
+  },
   async get(id) {
     return docs.find((d) => d._id === id) ?? null;
   },
@@ -107,7 +110,7 @@ describe("GET /api/courses", () => {
     const res = await request(app).get("/api/courses");
     expect(res.status).toBe(200);
     expect(res.body.courses).toEqual([
-      { slug: "analytics", title: "Analytics", chapterCount: 2, sourceCount: 1 },
+      { slug: "analytics", title: "Analytics", chapterCount: 2, sourceCount: 1, cardCount: 0 },
     ]);
     expect(JSON.stringify(res.body)).not.toContain("first body");
   });
@@ -163,6 +166,7 @@ describe("the shell itself", () => {
   it("turns a CouchDB failure into a 502 rather than a hang", async () => {
     const broken = createApp({
       async allDocs() { throw new Error("CouchDB 401 on course:"); },
+      async ids() { throw new Error("CouchDB 401 on course:"); },
       async get() { throw new Error("CouchDB 401"); },
       async put() { throw new Error("CouchDB 401"); },
     }, makeAgora());
@@ -174,6 +178,7 @@ describe("the shell itself", () => {
   it("answers /healthz without touching the database", async () => {
     const res = await request(createApp({
       async allDocs() { throw new Error("must not be called"); },
+      async ids() { throw new Error("must not be called"); },
       async get() { throw new Error("must not be called"); },
       async put() { throw new Error("must not be called"); },
     }, makeAgora())).get("/healthz");
@@ -496,5 +501,153 @@ describe("Aristoteles's memory", () => {
     // The recall answer is his message on the wire, so a reply is coming and
     // the page must keep polling even though the newest bubble is Aristoteles.
     expect(read.body.waiting).toBe(true);
+  });
+});
+
+/** Cards as `tools.lyceum_cards` writes them -- one of each behaviour the
+ *  screen has to tell apart, not one of each type for its own sake. */
+const CARDS: Doc[] = [
+  {
+    _id: "card:analytics:a-first:000",
+    type: "card",
+    cardType: "true_false",
+    courseId: "course:analytics",
+    chapterId: "chapter:analytics:a-first",
+    claimId: "claim:analytics:a-first:000",
+    grade: "high",
+    claimStatus: "grounded",
+    prompt: "A cohort shares a starting event.",
+    answer: "true",
+    options: [],
+    why: "Definition.",
+    sourceIds: ["source:analytics:paper"],
+  },
+  {
+    _id: "card:analytics:a-first:001",
+    type: "card",
+    cardType: "multiple_choice",
+    courseId: "course:analytics",
+    chapterId: "chapter:analytics:a-first",
+    claimId: "claim:analytics:a-first:001",
+    grade: "moderate",
+    claimStatus: "grounded",
+    prompt: "Which comes second?",
+    answer: "Define the metric",
+    options: ["Ask the question", "Define the metric"],
+    why: "Order matters.",
+    sourceIds: [],
+  },
+  {
+    _id: "card:analytics:a-first:002",
+    type: "card",
+    cardType: "design",
+    courseId: "course:analytics",
+    chapterId: "chapter:analytics:a-first",
+    claimId: "claim:analytics:a-first:002",
+    grade: "ungrounded",
+    claimStatus: "ungrounded",
+    prompt: "What would test this?",
+    answer: "Compare retention curves.",
+    options: [],
+    why: "Asserted, untested.",
+    sourceIds: [],
+  },
+];
+
+describe("practice", () => {
+  it("serves a course's cards with the claim's grade and its source titles", async () => {
+    const app = createApp(makeStub([...DOCS, ...CARDS]), makeAgora());
+    const res = await request(app).get("/api/courses/analytics/practice");
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(3);
+    expect(res.body.cards).toHaveLength(3);
+    const tf = res.body.cards.find((c: Doc) => c.cardType === "true_false");
+    // True/false is stored with no options and has to arrive with two.
+    expect(tf.options).toEqual(["True", "False"]);
+    expect(tf.answer).toBe("True");
+    expect(tf.grade).toBe("high");
+    expect(tf.sources).toEqual(["A paper"]);
+    // An ungrounded claim's card keeps that grade -- the whole rule of step 8.
+    expect(res.body.cards.find((c: Doc) => c.cardType === "design").grade).toBe("ungrounded");
+  });
+
+  it("honours a limit and refuses to serve the whole database on one", async () => {
+    const app = createApp(makeStub([...DOCS, ...CARDS]), makeAgora());
+    const one = await request(app).get("/api/courses/analytics/practice?limit=1");
+    expect(one.body.cards).toHaveLength(1);
+    expect(one.body.total).toBe(3);
+    const huge = await request(app).get("/api/courses/analytics/practice?limit=9999");
+    expect(huge.body.cards).toHaveLength(3);
+    const junk = await request(app).get("/api/courses/analytics/practice?limit=abc");
+    expect(junk.body.cards).toHaveLength(3);
+  });
+
+  it("404s a course that does not exist", async () => {
+    const app = createApp(makeStub([...DOCS, ...CARDS]), makeAgora());
+    expect((await request(app).get("/api/courses/nope/practice")).status).toBe(404);
+  });
+
+  it("records a session and orders the next one by it", async () => {
+    const docs = [...DOCS, ...CARDS];
+    const app = createApp(makeStub(docs), makeAgora());
+    const posted = await request(app)
+      .post("/api/practice/answers")
+      .send({
+        answers: [
+          { cardId: "card:analytics:a-first:000", result: "correct" },
+          { cardId: "card:analytics:a-first:001", result: "missed" },
+        ],
+      });
+    expect(posted.status).toBe(200);
+    expect(posted.body.stored).toBe(2);
+
+    const state = docs.find((d) => d._id === "cardstate:analytics:a-first:001");
+    expect(state).toMatchObject({ type: "cardState", seen: 1, missed: 1, lastResult: "missed" });
+    // Nothing is scheduled: there is no due date on a card state, ever.
+    expect(Object.keys(state!)).not.toContain("due");
+
+    // Unseen first, then the missed one, then the one he got right.
+    const next = await request(app).get("/api/courses/analytics/practice");
+    expect(next.body.cards.map((c: Doc) => c.id)).toEqual([
+      "card:analytics:a-first:002",
+      "card:analytics:a-first:001",
+      "card:analytics:a-first:000",
+    ]);
+  });
+
+  it("counts a second sighting rather than replacing the first", async () => {
+    const docs = [...DOCS, ...CARDS];
+    const app = createApp(makeStub(docs), makeAgora());
+    const body = { answers: [{ cardId: "card:analytics:a-first:000", result: "missed" }] };
+    await request(app).post("/api/practice/answers").send(body);
+    await request(app).post("/api/practice/answers").send(body);
+    expect(docs.find((d) => d._id === "cardstate:analytics:a-first:000")).toMatchObject({
+      seen: 2,
+      missed: 2,
+    });
+  });
+
+  it("refuses an answer that names no real card, or a result it does not know", async () => {
+    const docs = [...DOCS, ...CARDS];
+    const app = createApp(makeStub(docs), makeAgora());
+    const cases = [
+      { answers: [{ cardId: "card:analytics:nope:000", result: "correct" }] },
+      { answers: [{ cardId: "chapter:analytics:a-first", result: "correct" }] },
+      { answers: [{ cardId: "card:analytics:a-first:000", result: "brilliant" }] },
+      { answers: "all of them" },
+    ];
+    for (const body of cases) {
+      const res = await request(app).post("/api/practice/answers").send(body);
+      expect(res.status).toBeGreaterThanOrEqual(400);
+    }
+    // A refused post writes nothing.
+    expect(docs.some((d) => d._id.startsWith("cardstate:"))).toBe(false);
+  });
+
+  it("puts a card count on the course list so Home never offers an empty session", async () => {
+    const withCards = await request(createApp(makeStub([...DOCS, ...CARDS]), makeAgora())).get("/api/courses");
+    expect(withCards.body.courses[0].cardCount).toBe(3);
+    const without = await request(createApp(makeStub([...DOCS]), makeAgora())).get("/api/courses");
+    expect(without.body.courses[0].cardCount).toBe(0);
   });
 });

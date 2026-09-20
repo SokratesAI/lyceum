@@ -16,6 +16,9 @@ export type Doc = Record<string, any>;
 
 export interface Couch {
   allDocs(prefix: string): Promise<Doc[]>;
+  /** Just the ids under a prefix. The course list needs to know how many cards
+   *  each course has, and `allDocs` would ship every card body to answer it. */
+  ids(prefix: string): Promise<string[]>;
   get(id: string): Promise<Doc | null>;
   put(doc: Doc): Promise<Doc>;
 }
@@ -44,6 +47,16 @@ export const httpCouch: Couch = {
     if (!res.ok) throw new Error(`CouchDB ${res.status} on ${prefix}`);
     const body = (await res.json()) as { rows: { doc: Doc }[] };
     return body.rows.map((r) => r.doc);
+  },
+  async ids(prefix: string) {
+    const url =
+      `${base()}/_all_docs` +
+      `?startkey=${encodeURIComponent(JSON.stringify(prefix))}` +
+      `&endkey=${encodeURIComponent(JSON.stringify(prefix + "￰"))}`;
+    const res = await fetch(url, { headers: { Authorization: auth() } });
+    if (!res.ok) throw new Error(`CouchDB ${res.status} on ${prefix}`);
+    const body = (await res.json()) as { rows: { id: string }[] };
+    return body.rows.map((r) => r.id);
   },
   async put(doc: Doc) {
     const res = await fetch(`${base()}/${encodeURIComponent(doc._id)}`, {
