@@ -89,7 +89,7 @@ function Courses({ onOpen }) {
     ${data.courses.map((c) => html`<${CourseCard} key=${c.slug} course=${c} onOpen=${onOpen} />`)}`;
 }
 
-function Course({ slug, onOpenChapter }) {
+function Course({ slug, onOpenChapter, onPractise }) {
   const { loading, error, data } = useJSON(`/api/courses/${slug}`);
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
@@ -101,6 +101,9 @@ function Course({ slug, onOpenChapter }) {
         <div class="grow"><h3>${data.course.title}</h3>
           <p class="supporting">${data.chapters.length} chapters · ${data.sources.length} sources</p>
         </div>
+      </div>
+      <div class="qact" style="padding:0;margin-top:12px">
+        <button class="btn tonal" onClick=${() => onPractise(slug)}>${I('school')}Practice</button>
       </div>
     </div>
     <div class="sectitle">Chapters</div>
@@ -242,40 +245,245 @@ function Discussions({ onOpen }) {
     <button class="fab" onClick=${start} aria-label="New thread">${I(starting ? 'hourglass_empty' : 'add')}</button>`;
 }
 
-function Home({ onOpen }) {
+/* Practice -- build step 8's half that he can see. The layout, the class names
+   and the feedback shapes are the approved demo's, ported onto real cards; the
+   spec's hardest line is "do not redesign what the demo already settled".
+
+   Two rules from the spec are carried in code rather than in copy. A card
+   never claims more confidence than the claim under it, so a `design` card --
+   the one made from something he asserted and no source tests -- gets neutral
+   feedback and is never marked wrong. And nothing is scheduled: the end screen
+   has a count and a "worth another look" list, no streak and no next date. */
+const GRADE_WORD = {
+  high: 'High confidence',
+  moderate: 'Moderate confidence',
+  low: 'Low confidence',
+  ungrounded: 'Untested — this is yours, not a finding',
+};
+
+const norm = (v) => String(v).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+/* Cloze is typed, so it needs a comparison rather than a click. A stored answer
+   often carries its own gloss -- "click-through rate (CTR)" -- so either side
+   containing the other counts, and nothing under three characters counts at
+   all, because "a" is inside almost every answer there is. */
+const clozeOk = (typed, answer) => {
+  const t = norm(typed);
+  const a = norm(answer);
+  if (t.length < 3) return false;
+  return t === a || a.includes(t) || t.includes(a);
+};
+
+const CHOICE = ['multiple_choice', 'true_false'];
+const TYPED = ['written', 'design'];
+const KIND = {
+  multiple_choice: 'Multiple choice',
+  true_false: 'True or false',
+  cloze: 'Fill the blank',
+  written: 'Write an answer',
+  design: 'What would test this?',
+};
+
+function Practice({ slug, onClose, onAsk }) {
+  const { loading, error, data } = useJSON(`/api/courses/${slug}/practice`);
+  const [i, setI] = useState(0);
+  const [sel, setSel] = useState(null);
+  const [text, setText] = useState('');
+  const [shown, setShown] = useState(false);
+  const [missed, setMissed] = useState([]);
+  const [log, setLog] = useState([]);
+  const sent = useRef(false);
+
+  const cards = (data && data.cards) || [];
+  const over = cards.length > 0 && i >= cards.length;
+
+  /* Reported once, when the session is over rather than per card: the only
+     reader is the ordering of the next session, and a failed write costs him
+     nothing he can see, so it must not be able to break the end screen. */
+  useEffect(() => {
+    if (!over || sent.current || !log.length) return;
+    sent.current = true;
+    postJSON('/api/practice/answers', { answers: log }).catch(() => {});
+  }, [over, log]);
+
+  if (loading) return html`<${Loading} />`;
+  if (error) return html`<${Failed} error=${error} />`;
+  if (!cards.length) {
+    return html`
+      <${NotBuiltYet} title="No cards for this course yet" step="8"
+        what="Cards are generated from this course's claim atoms." />
+      <button class="btn text" onClick=${onClose}>Back</button>`;
+  }
+
+  if (over) {
+    const graded = log.filter((a) => a.result === 'correct' || a.result === 'missed').length;
+    return html`
+      <div class="quizwrap">
+        <div class="qtop"><div class="grow"></div>
+          <button class="btn text" onClick=${onClose}>Close</button></div>
+        <div class="qbody">
+          <div class="done">
+            <div class="big">${graded - missed.length}<span style="opacity:.4">/${graded}</span></div>
+            <p class="supporting">${data.course.title}</p>
+          </div>
+          ${missed.length ? html`
+            <div class="sectitle">Worth another look</div>
+            <div class="card">
+              ${missed.map((n) => html`
+                <div class="li" key=${n}>
+                  <div class="lead">${I('help')}</div>
+                  <div class="txt" style="font-size:14.5px;line-height:20px">${cards[n].prompt}</div>
+                </div>`)}
+            </div>` : null}
+        </div>
+        <div class="qact">
+          ${missed.length ? html`
+            <button class="btn tonal"
+              onClick=${() => onAsk(`Practice: ${cards[missed[0]].prompt}`)}>
+              ${I('forum')}Discuss these</button>` : null}
+          <button class="btn filled" onClick=${onClose}>Done</button>
+        </div>
+      </div>`;
+  }
+
+  const c = cards[i];
+  const choice = CHOICE.includes(c.cardType);
+  const typed = TYPED.includes(c.cardType);
+  const hypothesis = c.cardType === 'design';
+  /* A written answer is shown its model answer and not marked: the spec leaves
+     strict-versus-lenient grading open, and a keyword match would be the strict
+     version by accident. */
+  const correct = typed ? true : choice ? c.options[sel] === c.answer : clozeOk(text, c.answer);
+  const ready = choice ? sel !== null : text.trim().length > 0;
+
+  const record = (result) => setLog((l) => [...l, { cardId: c.id, result }]);
+  const next = (result) => {
+    record(result);
+    if (result === 'missed') setMissed((m) => [...m, i]);
+    setI(i + 1); setSel(null); setText(''); setShown(false);
+  };
+
+  return html`
+    <div class="quizwrap">
+      <div class="qtop">
+        <div class="qprog"><i style=${{ width: (i / cards.length * 100) + '%' }}></i></div>
+        <button class="btn text" onClick=${onClose}>Close</button>
+      </div>
+
+      <div class="qbody">
+        <p class="qkind">${KIND[c.cardType] || c.cardType} · card ${i + 1} of ${cards.length}</p>
+        <p class="qq">${c.cardType === 'cloze'
+          ? html`${c.prompt.split('___')[0]}<span class="cloze">${text || ' '}</span>${c.prompt.split('___')[1] || ''}`
+          : c.prompt}</p>
+
+        ${choice ? html`
+          <div class="qopts">
+            ${c.options.map((o, k) => html`
+              <button key=${k} disabled=${shown}
+                class=${'qopt' + (shown
+                  ? (o === c.answer ? ' right' : (k === sel ? ' wrong' : ' muted'))
+                  : (sel === k ? ' sel' : ''))}
+                onClick=${() => setSel(k)}>${o}</button>`)}
+          </div>`
+        : html`
+          <textarea class="qinput" placeholder="Your answer…" value=${text}
+            onInput=${(e) => setText(e.target.value)} disabled=${shown}></textarea>`}
+
+        ${shown ? html`
+          <div class=${'fb ' + (hypothesis ? 'neutral' : correct ? 'ok' : 'no')}>
+            <div class="hd">
+              ${I(hypothesis ? 'science' : correct ? 'check_circle' : 'cancel')}
+              ${hypothesis ? 'Your hypothesis' : correct ? 'Correct' : 'Not quite'}
+            </div>
+            ${typed || !correct ? html`<p><b>${hypothesis ? 'One way to test it:' : 'A good answer:'}</b> ${c.answer}</p>` : null}
+            ${c.why ? html`<p>${c.why}</p>` : null}
+            <div class="srcx">
+              ${GRADE_WORD[c.grade] || c.grade}${c.sources.length ? ' · ' + c.sources.join(', ') : ''}
+            </div>
+            <div class="act">
+              <button class="btn text" style="color:inherit"
+                onClick=${() => onAsk(`Practice: ${c.prompt}`)}>${I('forum')}Ask about this</button>
+            </div>
+          </div>` : null}
+      </div>
+
+      <div class="qact">
+        ${!shown ? html`
+          <button class="btn text" onClick=${() => next('skipped')}>Skip</button>
+          <button class="btn filled" disabled=${!ready} onClick=${() => setShown(true)}>Check</button>`
+        : html`
+          <button class="btn filled"
+            onClick=${() => next(typed ? 'seen' : correct ? 'correct' : 'missed')}>
+            ${i + 1 >= cards.length ? 'Finish' : 'Next'}</button>`}
+      </div>
+    </div>`;
+}
+
+function Home({ onOpen, onPractise }) {
   const { loading, error, data } = useJSON('/api/courses');
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
   const first = data.courses[0];
+  /* The course with the most cards, because only two of the six have any yet
+     and a Practice button that opens an empty session is worse than none. */
+  const practisable = data.courses
+    .filter((c) => c.cardCount > 0)
+    .sort((a, b) => b.cardCount - a.cardCount)[0];
   return html`
     <div class="sectitle">Where you left off</div>
     ${first
       ? html`<${CourseCard} course=${first} onOpen=${onOpen} />`
       : html`<${NotBuiltYet} title="Nothing started yet" step="3" what="No courses are imported." />`}
     <div class="sectitle">Practice</div>
-    <${NotBuiltYet} title="No cards yet" step="8"
-      what="Practice cards are generated from claims." />`;
+    ${practisable
+      ? html`
+        <div class="card practice">
+          <div class="row">
+            <div class="grow"><h3>${practisable.title}</h3>
+              <p class="supporting">${practisable.cardCount} cards, whenever you feel like it. Nothing is due.</p>
+            </div>
+          </div>
+          <div class="qact" style="padding:0;margin-top:12px">
+            <button class="btn filled" onClick=${() => onPractise(practisable.slug)}>Practice</button>
+          </div>
+        </div>`
+      : html`<${NotBuiltYet} title="No cards yet" step="8"
+          what="Practice cards are generated from claims." />`}`;
 }
 
 function App() {
   const [tab, setTab] = useState('home');
   const [course, setCourse] = useState(null);
   const [chapter, setChapter] = useState(null);
+  const [practice, setPractice] = useState(null);
   const [discussion, setDiscussion] = useState(null);
   const [discussionTitle, setDiscussionTitle] = useState('Aristoteles');
 
   const openCourse = (slug) => { setCourse(slug); setChapter(null); };
   const back = () => {
+    if (practice) return setPractice(null);
     if (discussion) return setDiscussion(null);
     return chapter ? setChapter(null) : setCourse(null);
   };
-  const inDetail = Boolean(course) || Boolean(discussion);
+  /* "Ask about this" is the gesture that makes practice tutoring rather than
+     marking (the spec's Khanmigo line), so it opens a real Aristoteles thread
+     rather than a dead button: one discussion, titled after the card. */
+  const ask = (title) => {
+    postJSON('/api/discussions', { title: title.slice(0, 200) }).then((data) => {
+      setPractice(null);
+      setDiscussionTitle('Aristoteles');
+      setTab('aristoteles');
+      setDiscussion(data.discussion.id);
+    }, () => {});
+  };
+  const inDetail = Boolean(course) || Boolean(discussion) || Boolean(practice);
 
   let title = TABS.find((t) => t.id === tab).label;
   let body;
-  if (chapter) { title = 'Reading'; body = html`<${Chapter} id=${chapter} />`; }
-  else if (course) { title = 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} />`; }
-  else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} />`;
+  if (practice) { title = 'Practice'; body = html`<${Practice} slug=${practice} onClose=${() => setPractice(null)} onAsk=${ask} />`; }
+  else if (chapter) { title = 'Reading'; body = html`<${Chapter} id=${chapter} />`; }
+  else if (course) { title = 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} onPractise=${setPractice} />`; }
+  else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} onPractise=${setPractice} />`;
   else if (tab === 'courses') body = html`<${Courses} onOpen=${openCourse} />`;
   else if (tab === 'workshop')
     body = html`<${NotBuiltYet} title="The workshop is not built yet" step="10"
@@ -295,7 +503,7 @@ function App() {
     <nav class="navbar">
       ${TABS.map((t) => html`
         <button key=${t.id} class=${t.id === tab && !inDetail ? 'on' : ''}
-                onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); setDiscussion(null); }}>
+                onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); setDiscussion(null); setPractice(null); }}>
           <span class="ind">${I(t.icon)}</span>${t.label}
         </button>`)}
     </nav>`;

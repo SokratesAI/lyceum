@@ -15,6 +15,21 @@ const byOrder = (a: Doc, b: Doc) => (a.order ?? 0) - (b.order ?? 0);
  *  threads about the same thing are two threads, and a title can be edited. */
 const discussionId = () => `discussion:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+/** A practice session is a handful of cards, not a queue to clear -- the spec
+ *  has no due dates and nothing is owed, so the session ends because it is
+ *  over and not because he finished a backlog. */
+const SESSION_CARDS = 12;
+const MAX_SESSION_CARDS = 50;
+const MAX_ANSWERS = 100;
+
+/** `missed` is the only result that changes what he sees next; `skipped` and
+ *  `seen` (a written answer, which nothing here grades) are recorded so the
+ *  card moves out of the never-seen tier. */
+const RESULTS = ["correct", "missed", "skipped", "seen"];
+
+/** The grader stores `true`/`false` as a lower-case string. */
+const tfLabel = (answer: unknown) => (String(answer).toLowerCase() === "true" ? "True" : "False");
+
 const MAX_TEXT = 8000;
 const THREAD_LIMIT = 200;
 
@@ -62,12 +77,17 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
   router.get("/courses", async (_req, res, next) => {
     try {
       const docs = await couch.allDocs("course:");
+      // One id-only read for every card in the database, rather than one read
+      // per course: the number is only used to decide whether a course can be
+      // practised at all, and a card body has no business on this screen.
+      const cardIds = await couch.ids("card:");
       res.json({
         courses: docs.map((d) => ({
           slug: d.slug,
           title: d.title,
           chapterCount: (d.chapterIds ?? []).length,
           sourceCount: (d.sourceIds ?? []).length,
+          cardCount: cardIds.filter((id) => id.startsWith(`card:${d.slug}:`)).length,
         })),
       });
     } catch (err) {
@@ -113,6 +133,128 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
           sourceIds: doc.sourceIds ?? [],
         },
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+
+  /** A practice session's cards -- build step 8, the app's half.
+   *
+   * `tools.lyceum_cards` in agora-persona-runner writes the cards; this route
+   * decides which ones he sees now and in what order. The spec's constraint is
+   * the ordering one: **no due dates, ever** (product principle 1), so nothing
+   * here is ever "owed" or "late" -- a card is only ever earlier or later in
+   * the next session he chooses to start.
+   *
+   * Order: never-seen first, then the ones he missed last time, then by how
+   * long ago he saw them. That is a retrievability proxy and deliberately not
+   * FSRS -- FSRS needs an interval history this database does not have yet,
+   * and a half-implemented scheduler that invents intervals would order worse
+   * than this while looking principled.
+   *
+   * A card's `grade` is copied through untouched, because the whole point of
+   * step 7 is that a settled finding and an untested assertion are not the
+   * same card, and the screen has to be able to show which is which.
+   */
+  router.get("/courses/:slug/practice", async (req, res, next) => {
+    try {
+      const course = await couch.get(`course:${req.params.slug}`);
+      if (!course) return res.status(404).json({ error: "no such course" });
+
+      const asked = Number(req.query.limit ?? SESSION_CARDS);
+      const limit = Number.isFinite(asked)
+        ? Math.min(Math.max(Math.trunc(asked), 1), MAX_SESSION_CARDS)
+        : SESSION_CARDS;
+
+      const cards = await couch.allDocs(`card:${req.params.slug}:`);
+      const states = await couch.allDocs(`cardstate:${req.params.slug}:`);
+      const sources = await couch.allDocs(`source:${req.params.slug}:`);
+      const titleOf = new Map(sources.map((s) => [s._id, s.title as string]));
+      const stateOf = new Map(states.map((s) => [s.cardId as string, s]));
+
+      const rank = (c: Doc) => {
+        const st = stateOf.get(c._id);
+        if (!st) return { tier: 0, at: "" };
+        return { tier: st.lastResult === "missed" ? 1 : 2, at: st.lastSeen ?? "" };
+      };
+      const ordered = [...cards].sort((a, b) => {
+        const ra = rank(a);
+        const rb = rank(b);
+        if (ra.tier !== rb.tier) return ra.tier - rb.tier;
+        if (ra.at !== rb.at) return ra.at < rb.at ? -1 : 1;
+        return a._id < b._id ? -1 : 1;
+      });
+
+      res.json({
+        course: { slug: course.slug, title: course.title },
+        total: cards.length,
+        cards: ordered.slice(0, limit).map((c) => ({
+          id: c._id,
+          cardType: c.cardType,
+          prompt: c.prompt,
+          // True/false is stored with no options because its two options are
+          // implied; the screen needs real buttons, so they are made here and
+          // not in the front end, where a second copy of this rule would rot.
+          options: c.cardType === "true_false" ? ["True", "False"] : (c.options ?? []),
+          answer: c.cardType === "true_false" ? tfLabel(c.answer) : c.answer,
+          why: c.why ?? "",
+          grade: c.grade,
+          claimStatus: c.claimStatus,
+          chapterId: c.chapterId,
+          sources: (c.sourceIds ?? [])
+            .map((id: string) => titleOf.get(id) ?? id)
+            .filter(Boolean),
+        })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /** What happened in a session, so the next one can order itself.
+   *
+   * One document per card rather than one per session: the ordering above only
+   * ever asks "how did this card go last time", and a growing list of session
+   * documents would make that a scan. Counts are kept because they cost one
+   * field each and a card he has missed three times is worth knowing about
+   * later; nothing reads them yet, and nothing schedules anything.
+   */
+  router.post("/practice/answers", async (req, res, next) => {
+    try {
+      const answers = Array.isArray(req.body?.answers) ? req.body.answers : null;
+      if (!answers) return res.status(400).json({ error: "answers must be an array" });
+      if (answers.length > MAX_ANSWERS) {
+        return res.status(400).json({ error: `at most ${MAX_ANSWERS} answers` });
+      }
+      const now = new Date().toISOString();
+      let stored = 0;
+      for (const a of answers) {
+        const cardId = typeof a?.cardId === "string" ? a.cardId : "";
+        const result = RESULTS.includes(a?.result) ? a.result : null;
+        if (!cardId.startsWith("card:") || !result) {
+          return res.status(400).json({ error: "each answer needs a card id and a result" });
+        }
+        const card = await couch.get(cardId);
+        if (!card || card.type !== "card") {
+          return res.status(404).json({ error: `no such card: ${cardId}` });
+        }
+        const id = `cardstate:${cardId.slice("card:".length)}`;
+        const prev = await couch.get(id);
+        await couch.put({
+          ...(prev ?? {}),
+          _id: id,
+          type: "cardState",
+          cardId,
+          courseId: card.courseId,
+          seen: (prev?.seen ?? 0) + 1,
+          missed: (prev?.missed ?? 0) + (result === "missed" ? 1 : 0),
+          lastResult: result,
+          lastSeen: now,
+        });
+        stored += 1;
+      }
+      res.json({ stored });
     } catch (err) {
       next(err);
     }
