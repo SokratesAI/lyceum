@@ -1,14 +1,10 @@
-import express from "express";
 import pino from "pino";
+import { createApp } from "./app.js";
+import { httpCouch } from "./couch.js";
 
 const logger = pino();
-const app = express();
 const port = Number(process.env.PORT ?? 8080);
 
-app.get("/healthz", (_req, res) => {
-  res.status(200).json({ status: "ok" });
-});
-
-app.listen(port, () => {
-  logger.info({ port }, "service listening");
+createApp(httpCouch).listen(port, () => {
+  logger.info({ port }, "lyceum listening");
 });
