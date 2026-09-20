@@ -10,6 +10,7 @@ import request from "supertest";
 import { createApp } from "./app.js";
 import type { Couch, Doc } from "./couch.js";
 import { NoToken, visibleMessages, type Agora } from "./agora.js";
+import { briefing, contextBlock, parseMemories, parseRecalls, slug, stripMarkers } from "./memory.js";
 
 const DOCS: Doc[] = [
   {
@@ -64,24 +65,37 @@ const makeStub = (docs: Doc[] = [...DOCS]): Couch => ({
     return docs.find((d) => d._id === id) ?? null;
   },
   async put(doc) {
-    docs.push(doc);
+    // Replace by id rather than push: CouchDB has one document per id, and a
+    // stub that appends would make an upsert look like it worked while the
+    // old copy was still the one `get` found.
+    const at = docs.findIndex((d) => d._id === doc._id);
+    if (at >= 0) docs[at] = doc;
+    else docs.push(doc);
     return { ...doc, _rev: "1-stub" };
   },
 });
 
-const makeAgora = (sent: { id: string; text: string }[] = []): Agora => ({
+const makeAgora = (
+  sent: { id: string; text: string; sender?: string }[] = [],
+  reply?: { sender: string; text: string; ts: string | null }[],
+): Agora => ({
   async createConversation(name) {
     return `conv-for-${name}`;
   },
   async postMessage(conversationId, text) {
-    sent.push({ id: conversationId, text });
+    // Everything this app posts goes in as the owner -- measured, not assumed:
+    // Agora records a message from another sender and the persona never reads
+    // it. So the stub records the one sender there is.
+    sent.push({ id: conversationId, text, sender: "Edvard" });
     return "msg-1";
   },
   async messages() {
-    return [
-      { sender: "Edvard", text: "what is a KPI", ts: "2026-09-20T22:00:00Z" },
-      { sender: "Aristoteles", text: "a measure you act on", ts: "2026-09-20T22:00:05Z" },
-    ];
+    return (
+      reply ?? [
+        { sender: "Edvard", text: "what is a KPI", ts: "2026-09-20T22:00:00Z" },
+        { sender: "Aristoteles", text: "a measure you act on", ts: "2026-09-20T22:00:05Z" },
+      ]
+    );
   },
 });
 
@@ -214,7 +228,7 @@ describe("discussions with Aristoteles", () => {
   });
 
   it("sends his message into that conversation and nowhere else", async () => {
-    const sent: { id: string; text: string }[] = [];
+    const sent: { id: string; text: string; sender?: string }[] = [];
     const fresh = makeStub([...DOCS]);
     const chat = createApp(fresh, makeAgora(sent));
     const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
@@ -223,11 +237,17 @@ describe("discussions with Aristoteles", () => {
       .post(`/api/discussions/${made.body.discussion.id}/messages`)
       .send({ text: "what is a KPI" });
     expect(res.status).toBe(201);
-    expect(sent).toEqual([{ id: "conv-for-Lyceum — OKRs", text: "what is a KPI" }]);
+    // The briefing is also on this wire, from a different sender; his message
+    // is the only one attributed to him.
+    expect(sent).toHaveLength(1);
+    expect(sent[0].id).toBe("conv-for-Lyceum — OKRs");
+    // His words are there, with the memory index riding in front of them.
+    expect(sent[0].text).toContain("what is a KPI");
+    expect(sent[0].text).toContain("<context>");
   });
 
   it("refuses an empty message rather than posting a blank one", async () => {
-    const sent: { id: string; text: string }[] = [];
+    const sent: { id: string; text: string; sender?: string }[] = [];
     const fresh = makeStub([...DOCS]);
     const chat = createApp(fresh, makeAgora(sent));
     const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
@@ -298,5 +318,183 @@ describe("discussions with Aristoteles", () => {
     const chat = createApp(makeStub([...DOCS]), broken);
     const res = await request(chat).post("/api/discussions").send({ title: "OKRs" });
     expect(res.status).toBe(502);
+  });
+});
+
+/** Cross-chat memory -- the second half of build step 5.
+ *
+ * The parse and the briefing are pure functions and tested directly; the two
+ * behaviours that only exist once the routes are wired -- a memory written by
+ * a reply, and a recall answered back into the thread -- go through the app
+ * with a stub that actually stores what it is given.
+ */
+describe("Aristoteles's memory", () => {
+  it("parses a memory out of a reply and leaves the prose readable", () => {
+    const text =
+      'A KPI is a measure you act on.\n\n<memory name="Edvard\'s first project" ' +
+      'description="the OKR framework, DSRM stage 1">He picked goal-setting as project #1.</memory>\n\nWhat next?';
+    expect(parseMemories(text)).toEqual([
+      {
+        name: "Edvard's first project",
+        description: "the OKR framework, DSRM stage 1",
+        body: "He picked goal-setting as project #1.",
+      },
+    ]);
+    expect(stripMarkers(text)).toBe("A KPI is a measure you act on.\n\nWhat next?");
+    // Negative control: ordinary prose carries no memory, so the parser is
+    // measuring the marker and not the word.
+    expect(parseMemories("I remember that he picked goal-setting.")).toEqual([]);
+  });
+
+  it("reads a recall, deduplicates it, and takes it out of the bubble", () => {
+    const text = 'Let me check. <recall name="Edvard\'s first project"/> <recall name="edvard-s-first-project"/>';
+    expect(parseRecalls(text)).toEqual(["edvard-s-first-project"]);
+    expect(stripMarkers(text)).toBe("Let me check.");
+  });
+
+  it("slugs two spellings of one name to one id", () => {
+    expect(slug("Goal setting")).toBe("goal-setting");
+    expect(slug("goal-setting")).toBe("goal-setting");
+  });
+
+  it("briefs an empty memory and a populated one differently", () => {
+    expect(briefing([])).toContain("You remember nothing yet");
+    const withOne = briefing([{ _id: "memory:okrs", name: "OKRs", description: "his framework" }]);
+    expect(withOne).toContain("- OKRs — his framework");
+    expect(withOne).not.toContain("You remember nothing yet");
+  });
+
+  it("rides the index in on his first message, once per thread", async () => {
+    const sent: { id: string; text: string; sender?: string }[] = [];
+    const docs: Doc[] = [
+      ...DOCS,
+      { _id: "memory:okrs", type: "memory", name: "OKRs", description: "his framework", body: "the long body" },
+    ];
+    const chat = createApp(makeStub(docs), makeAgora(sent));
+    const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
+    // Creating the thread costs no model call and says nothing.
+    expect(sent).toEqual([]);
+
+    const id = made.body.discussion.id;
+    await request(chat).post(`/api/discussions/${id}/messages`).send({ text: "first" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toContain("- OKRs — his framework");
+    // The index and not the bodies: that is the whole point of an index.
+    expect(sent[0].text).not.toContain("the long body");
+
+    await request(chat).post(`/api/discussions/${id}/messages`).send({ text: "second" });
+    expect(sent).toHaveLength(2);
+    expect(sent[1].text).toBe("second");
+  });
+
+  it("hides the block it rode in on from the page", () => {
+    const text = `${contextBlock("What you already remember:\n- OKRs — his framework")}\n\nwhat is a KPI`;
+    expect(stripMarkers(text)).toBe("what is a KPI");
+  });
+
+  it("stores a memory a reply wrote, and stores it once over two polls", async () => {
+    const docs: Doc[] = [...DOCS];
+    const chat = createApp(
+      makeStub(docs),
+      makeAgora([], [
+        { sender: "Edvard", text: "my first project is goal-setting", ts: "2026-09-20T22:00:00Z" },
+        {
+          sender: "Aristoteles",
+          text: 'Noted.\n<memory name="First project" description="what he chose">goal-setting</memory>',
+          ts: "2026-09-20T22:00:05Z",
+        },
+      ]),
+    );
+    const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
+    const id = made.body.discussion.id;
+
+    const first = await request(chat).get(`/api/discussions/${id}/messages`);
+    expect(first.status).toBe(200);
+    // The marker never reaches the page.
+    expect(first.body.messages.map((m: Doc) => m.text)).toEqual([
+      "my first project is goal-setting",
+      "Noted.",
+    ]);
+
+    await request(chat).get(`/api/discussions/${id}/messages`);
+    const list = await request(chat).get("/api/memories");
+    expect(list.body.memories.map((m: Doc) => m.name)).toEqual(["First project"]);
+    expect(list.body.memories[0].body).toBe("goal-setting");
+    expect(list.body.memories[0].fromDiscussion).toBe(id);
+  });
+
+  it("answers a recall by posting the body back, and only for the newest message", async () => {
+    const sent: { id: string; text: string; sender?: string }[] = [];
+    const docs: Doc[] = [
+      ...DOCS,
+      {
+        _id: "memory:first-project",
+        type: "memory",
+        name: "First project",
+        description: "what he chose",
+        body: "goal-setting",
+      },
+    ];
+    const chat = createApp(
+      makeStub(docs),
+      makeAgora(sent, [
+        {
+          sender: "Aristoteles",
+          text: 'One moment. <recall name="First project"/>',
+          ts: "2026-09-20T22:00:05Z",
+        },
+      ]),
+    );
+    const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
+    await request(chat).get(`/api/discussions/${made.body.discussion.id}/messages`);
+
+    const answers = sent.filter((m) => m.text.includes('Memory "'));
+    expect(answers).toHaveLength(1);
+    expect(answers[0].text).toContain("goal-setting");
+    // Inside a context block, so it never renders as a bubble.
+    expect(stripMarkers(answers[0].text)).toBe("");
+  });
+
+  it("does not post a body the thread already carries", async () => {
+    // This is the loop guard, not a tidiness rule: an answered recall is an
+    // owner message, which starts another model turn, which can recall again.
+    const sent: { id: string; text: string; sender?: string }[] = [];
+    const docs: Doc[] = [
+      ...DOCS,
+      {
+        _id: "memory:first-project",
+        type: "memory",
+        name: "First project",
+        description: "what he chose",
+        body: "goal-setting",
+      },
+    ];
+    const chat = createApp(
+      makeStub(docs),
+      makeAgora(sent, [
+        { sender: "Edvard", text: contextBlock('Memory "First project":\n\ngoal-setting'), ts: "2026-09-20T22:00:06Z" },
+        { sender: "Aristoteles", text: 'Again please. <recall name="First project"/>', ts: "2026-09-20T22:00:07Z" },
+      ]),
+    );
+    const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
+    await request(chat).get(`/api/discussions/${made.body.discussion.id}/messages`);
+    expect(sent.filter((m) => m.text.includes('Memory "'))).toHaveLength(0);
+  });
+
+  it("drops a message that is nothing but a context block", async () => {
+    const chat = createApp(
+      makeStub([...DOCS]),
+      makeAgora([], [
+        { sender: "Edvard", text: "hello", ts: "2026-09-20T22:00:00Z" },
+        { sender: "Aristoteles", text: "hello back", ts: "2026-09-20T22:00:01Z" },
+        { sender: "Edvard", text: contextBlock('Memory "X":\n\nbody'), ts: "2026-09-20T22:00:02Z" },
+      ]),
+    );
+    const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
+    const read = await request(chat).get(`/api/discussions/${made.body.discussion.id}/messages`);
+    expect(read.body.messages.map((m: Doc) => m.text)).toEqual(["hello", "hello back"]);
+    // The recall answer is his message on the wire, so a reply is coming and
+    // the page must keep polling even though the newest bubble is Aristoteles.
+    expect(read.body.waiting).toBe(true);
   });
 });

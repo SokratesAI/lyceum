@@ -7,6 +7,7 @@
 import express, { type Router } from "express";
 import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
+import { briefing, contextBlock, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
 
 const byOrder = (a: Doc, b: Doc) => (a.order ?? 0) - (b.order ?? 0);
 
@@ -16,6 +17,44 @@ const discussionId = () => `discussion:${Date.now()}-${Math.random().toString(36
 
 const MAX_TEXT = 8000;
 const THREAD_LIMIT = 200;
+
+/** Read Aristoteles's markers out of a thread and act on them.
+ *
+ * Runs on the read path because that is the only moment this app learns a
+ * reply exists -- Agora pushes nothing here, and the page polls. It is
+ * therefore re-run on every poll, which is why writing is an upsert by slug
+ * and why a recall is answered only when the recall is the newest message:
+ * both make a second pass over the same reply a no-op rather than a duplicate.
+ *
+ * The second guard is the one that bounds cost. Answering a recall posts an
+ * owner message, which starts another model turn, which can contain another
+ * recall -- so a memory whose body is already somewhere in the transcript is
+ * not posted again. Aristoteles can still ask for something he has not been
+ * given; he cannot make the app and himself talk to each other forever.
+ */
+async function harvest(
+  couch: Couch,
+  agora: Agora,
+  doc: Doc,
+  rows: { sender: string; text: string }[],
+) {
+  const last = rows[rows.length - 1];
+  if (!last || last.sender === OWNER) return;
+
+  for (const file of parseMemories(last.text)) {
+    await upsert(couch, file, doc._id);
+  }
+
+  const transcript = rows.map((r) => r.text).join("\n");
+  for (const id of parseRecalls(last.text)) {
+    const mem = await couch.get(`memory:${id}`);
+    if (mem && transcript.includes(mem.body)) continue;
+    const text = mem
+      ? `Memory "${mem.name}":\n\n${mem.body}`
+      : `No memory named "${id}" -- nothing has been written under that name.`;
+    await agora.postMessage(doc.conversationId, contextBlock(text));
+  }
+}
 
 export function apiRouter(couch: Couch, agora: Agora): Router {
   const router = express.Router();
@@ -148,11 +187,24 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
       if (!doc || doc.type !== "discussion") {
         return res.status(404).json({ error: "no such discussion" });
       }
-      const messages = await agora.messages(doc.conversationId, THREAD_LIMIT);
+      const raw = await agora.messages(doc.conversationId, THREAD_LIMIT);
+      await harvest(couch, agora, doc, raw);
+      // Everything the app said to Aristoteles is inside a `<context>` block
+      // in an owner message; stripping it leaves an empty string, and an empty
+      // message is not a bubble. That is what keeps the machinery off his
+      // screen without a second sender -- which Agora records but the model
+      // never reads.
+      const messages = raw
+        .map((m) => ({ ...m, text: stripMarkers(m.text) }))
+        .filter((m) => m.text);
       // `waiting` is `nova_conversations.thread`'s flag and means the same
       // thing: the last message is his, so a reply is still coming and the
-      // page should keep polling rather than settle.
-      const last = messages[messages.length - 1];
+      // page should keep polling rather than settle. It is read off the raw
+      // rows, not the rendered ones -- a recall answer is an owner message
+      // that renders as nothing, and judging by the visible list would settle
+      // the page while a reply was on its way, leaving the answer unseen
+      // until a reload.
+      const last = raw[raw.length - 1];
       res.json({
         discussion: { id: doc._id, title: doc.title },
         messages,
@@ -174,8 +226,42 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
       if (!doc || doc.type !== "discussion") {
         return res.status(404).json({ error: "no such discussion" });
       }
-      const id = await agora.postMessage(doc.conversationId, text);
+      // The index rides on his first message rather than going in as its own
+      // turn: one model call instead of two, and no bubble to hide.
+      let outgoing = text;
+      if (!doc.briefed) {
+        outgoing = `${contextBlock(briefing(await couch.allDocs("memory:")))}\n\n${text}`;
+        await couch.put({ ...doc, briefed: true });
+      }
+      const id = await agora.postMessage(doc.conversationId, outgoing);
       res.status(201).json({ messageId: id });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /** Everything Aristoteles remembers, newest first.
+   *
+   * No screen renders this yet -- the approved UI has four tabs and this
+   * cycle does not redesign it. It exists so the memory is inspectable from
+   * outside the model: a memory I cannot read is one I cannot check, correct
+   * or delete, and "the model says it remembers" is not a measurement.
+   */
+  router.get("/memories", async (_req, res, next) => {
+    try {
+      const docs = await couch.allDocs("memory:");
+      res.json({
+        memories: docs
+          .map((d) => ({
+            id: d._id,
+            name: d.name,
+            description: d.description ?? "",
+            body: d.body ?? "",
+            fromDiscussion: d.fromDiscussion ?? null,
+            updatedAt: d.updatedAt ?? null,
+          }))
+          .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))),
+      });
     } catch (err) {
       next(err);
     }
