@@ -398,6 +398,11 @@ function Discussion({ id, onTitle, placeholder = 'Ask Aristoteles…' }) {
     <div class="chatscroll">
       ${about && about.kind === 'claim' ? html`<${AboutClaim} about=${about} />` : null}
       <div class="chat">
+        ${discussion.opened ? html`
+          <div class="saved">
+            <div class="hd">${I('handyman')}Created</div>
+            <div class="f" style="font-family:Roboto,sans-serif;font-size:13.5px">${discussion.opened}</div>
+          </div>` : null}
         ${messages.map((m, n) => html`
           <div key=${n} class=${'bub ' + (m.sender === 'Edvard' ? 'e' : 'a')}>${m.text}</div>`)}
         ${waiting ? html`<div class="bub a supporting">Aristoteles is thinking…</div>` : null}
@@ -516,13 +521,24 @@ function Discussions({ onOpen }) {
     );
   };
 
+  /* The demo's chip makes a real project: stage 1, a placeholder title for him
+     to fix, and the thread it was started in, which opens straight away. */
+  const startProject = () => {
+    if (starting) return;
+    setStarting(true);
+    postJSON('/api/workshop', {}).then(
+      (data) => { setStarting(false); onOpen(data.discussion.id); },
+      (err) => { setStarting(false); setState((s) => ({ ...s, error: String(err.message || err) })); },
+    );
+  };
+
   if (state.loading) return html`<${Loading} />`;
   if (state.error && !state.data) return html`<${Failed} error=${state.error} />`;
   const list = state.data.discussions;
   return html`
     ${state.error ? html`<${Failed} error=${state.error} />` : null}
     <div class="dests" style="margin:4px 0 12px">
-      <button class="chip" onClick=${() => start('Start a workshop project')}>${I('handyman')}Start a workshop project</button>
+      <button class="chip" onClick=${startProject}>${I('handyman')}Start a workshop project</button>
       <button class="chip" onClick=${() => start('Build a course')}>${I('school')}Build a course</button>
       <button class="chip" onClick=${() => start()}>${I(starting ? 'hourglass_empty' : 'add')}New thread</button>
     </div>
