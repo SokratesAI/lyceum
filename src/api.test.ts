@@ -5,7 +5,7 @@
  * chapter -- because a test written against a shape the importer does not
  * produce would pass against nothing real.
  */
-import type { VaultStore } from "./vault.js";
+import { appendNote, type VaultStore } from "./vault.js";
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "./app.js";
@@ -884,6 +884,18 @@ describe("notes", () => {
     expect(v.docs).toEqual({});
   });
 
+  it("keys a mixed-case path by its lowercased id, as LiveSync does, and keeps the casing in path", async () => {
+    const v = memVault({
+      "obsidian/work/inbox.md": { _id: "work/inbox.md", path: "Work/Inbox.md", _rev: "1-a", children: ["h:old"], size: 4, ctime: 5, type: "plain" },
+      "obsidian/h:old": { _id: "h:old", data: "# In\n", type: "leaf" },
+    });
+    const { created } = await appendNote(v.store, "Work/Inbox.md", "a thought");
+    expect(created).toBe(false);
+    expect(v.docs["obsidian/Work/Inbox.md"]).toBeUndefined();
+    expect(v.docs["obsidian/work/inbox.md"].path).toBe("Work/Inbox.md");
+    expect(v.text("obsidian", "work/inbox.md")).toBe("# In\n- a thought\n");
+  });
+
   it("will not append to a file whose last chunk is missing", async () => {
     const v = memVault({ "obsidian/learn.md": { _id: "learn.md", _rev: "1-a", children: ["h:gone"], type: "plain" } });
     const app = createApp(makeStub(), makeAgora(), v.store);
@@ -1117,6 +1129,12 @@ describe("workshop", () => {
     const none = await request(bench).post("/api/discussions").send({ title: "x", workshop: { project: "nope", stage: "problem" } });
     expect(none.status).toBe(404);
     expect(made).toEqual([]);
+  });
+
+  it("answers 502 rather than crashing when the project lookup throws", async () => {
+    const down: Couch = { ...makeStub([...DOCS, project]), async get() { throw new Error("couch down"); } };
+    const res = await request(createApp(down, makeAgora(), store)).post("/api/discussions").send({ title: "x", workshop: { project: "axiology", stage: "problem" } });
+    expect(res.status).toBe(502);
   });
 
   it("keeps the page when one transcript cannot be counted", async () => {

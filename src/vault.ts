@@ -39,7 +39,10 @@ export function asBullet(text: string): string {
 /** Append `text` to the file at `path`, creating the file if it is missing. */
 export async function appendNote(store: VaultStore, path: string, text: string, now = Date.now()): Promise<{ created: boolean }> {
   const db = dbFor(path);
-  const doc = await store.get(db, path);
+  // Keyed lowercase, as createFile does: LiveSync ids carry no capitals, so a
+  // mixed-case id is a second document Obsidian never shows.
+  const key = path.toLowerCase();
+  const doc = await store.get(db, key);
   const live = doc && !doc._deleted && !doc.deleted ? doc : null;
   let children: string[] = live ? [...(live.children ?? [])] : [];
   let size = live ? Number(live.size ?? 0) : 0;
@@ -62,7 +65,7 @@ export async function appendNote(store: VaultStore, path: string, text: string, 
   size += Buffer.byteLength(add, "utf8");
 
   const next: Record<string, any> = {
-    _id: path, path, data: "", children: [...children, id], size,
+    _id: key, path, data: "", children: [...children, id], size,
     ctime: live?.ctime ?? now, mtime: now, type: "plain", eden: {},
   };
   if (doc?._rev) next._rev = doc._rev;
