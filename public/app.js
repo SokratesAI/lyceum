@@ -835,7 +835,7 @@ function NoteSheet({ close, onSaved, here }) {
           <button class="chip" key=${d.path} onClick=${() => { setPicked(d); setOther(false); }}>
             ${I(destIcon(d))}${d.label}</button>`)}
       </div>` : null}
-      ${destErr ? html`<p class="supporting" style="color:var(--error)">Could not load where notes go. Close and try again; your text is still here.</p>` : null}
+      ${destErr ? html`<p class="supporting" style="color:var(--error)">Could not load where notes go. Close the sheet and try again.</p>` : null}
       ${err ? html`<p class="supporting" style="color:var(--error)">${err}</p>` : null}
       <div class="sheetact">
         <button class="btn text" onClick=${close}>Cancel</button>
