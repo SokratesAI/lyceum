@@ -1082,7 +1082,9 @@ function App() {
   };
   const toTab = (t) => reset([{ kind: t }]);
   // A page learns its own title after it loads; it is kept on its entry so going back shows it at once.
-  const patchAt = (depth, p) => setStack((s) => (s[depth] ? [...s.slice(0, depth), { ...s[depth], ...p }, ...s.slice(depth + 1)] : s));
+  // It only patches the entry it was drawn for, so a late answer cannot retitle a page that replaced it.
+  const patchAt = (depth, p, v) => setStack((s) => (s[depth] && (!v || (s[depth].kind === v.kind && s[depth].id === v.id && s[depth].slug === v.slug))
+    ? [...s.slice(0, depth), { ...s[depth], ...p }, ...s.slice(depth + 1)] : s));
 
   /* "Ask about this" is the gesture that makes practice tutoring rather than
      marking (the spec's Khanmigo line), so it opens a real Aristoteles thread
@@ -1094,7 +1096,7 @@ function App() {
   };
 
   const view = (v, depth) => {
-    const titled = (t) => patchAt(depth, { title: t });
+    const titled = (t) => patchAt(depth, { title: t }, v);
     switch (v.kind) {
       case 'home': return { title: 'Lyceum', body: html`<${Home}
           onOpen=${(slug) => push({ kind: 'course', slug })}
@@ -1106,10 +1108,10 @@ function App() {
       case 'course': return { title: v.title || 'Course', discuss: true, body: html`<${Course} slug=${v.slug}
           onOpenChapter=${(id) => push({ kind: 'chapter', id, courseTitle: v.title })} onTitle=${titled} />` };
       case 'chapter': return { title: v.courseTitle || 'Reading', discuss: true, body: html`<${Chapter} id=${v.id}
-          onTitle=${(t) => patchAt(depth, { chapterTitle: t })} />` };
+          onTitle=${(t) => patchAt(depth, { chapterTitle: t }, v)} />` };
       case 'practice': return { title: 'Practice', practice: true, body: html`<${Practice} slug=${v.slug} onClose=${back} onAsk=${ask} />` };
       case 'project': return { title: v.project.title, discuss: true, body: html`<${Bench} slug=${v.project.slug}
-          stageIn=${v.stage} setStageIn=${(i) => patchAt(depth, { stage: i })} refresh=${benchRefresh}
+          stageIn=${v.stage} setStageIn=${(i) => patchAt(depth, { stage: i }, v)} refresh=${benchRefresh}
           openFile=${(file) => push({ kind: 'file', slug: v.project.slug, file })}
           openDisc=${(d) => push({ kind: 'disc', d })} />` };
       case 'file': return { title: v.file.path.split('/').pop(), body: html`<${FileView} slug=${v.slug} file=${v.file} />` };
