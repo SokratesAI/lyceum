@@ -744,6 +744,42 @@ function Home({ onOpen, onOpenChapter, onPractise }) {
       Nothing is due, nothing expires.</p>`;
 }
 
+/* The demo's Note sheet. Its "Where it goes" chips were vault paths, and this
+   app can write only its own database, so the choice is the course on screen
+   or no course -- the one decision a note needs at the moment it is written. */
+function NoteSheet({ course, courseTitle, close, onSaved }) {
+  const [text, setText] = useState('');
+  const [here, setHere] = useState(Boolean(course));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const save = () => {
+    setBusy(true); setErr('');
+    postJSON('/api/notes', { text, course: here ? course : null })
+      .then((d) => onSaved(d.note.courseTitle || 'My notes'),
+            () => { setBusy(false); setErr('Could not save. Your text is still here.'); });
+  };
+  return html`
+    <div class="scrim" onClick=${close}></div>
+    <div class="sheet">
+      <div class="grab"></div>
+      <h3>New note</h3>
+      <textarea placeholder="Write it down now. Shape it later."
+        value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+      <div class="sectitle s3" style="margin:14px 0 2px">Where it goes</div>
+      <div class="dests">
+        ${course ? html`<button class=${'chip' + (here ? ' on' : '')} onClick=${() => setHere(true)}>
+          ${here ? I('check') : null}${courseTitle || course}</button>` : null}
+        <button class=${'chip' + (!here ? ' on' : '')} onClick=${() => setHere(false)}>
+          ${!here ? I('check') : null}My notes</button>
+      </div>
+      ${err ? html`<p class="supporting" style="color:var(--error)">${err}</p>` : null}
+      <div class="sheetact">
+        <button class="btn text" onClick=${close}>Cancel</button>
+        <button class="btn filled" disabled=${busy || !text.trim()} onClick=${save}>Save</button>
+      </div>
+    </div>`;
+}
+
 function App() {
   const [tab, setTab] = useState('home');
   const [course, setCourse] = useState(null);
@@ -754,6 +790,8 @@ function App() {
   const [courseTitle, setCourseTitle] = useState('');
   const [chapterTitle, setChapterTitle] = useState('');
   const [talk, setTalk] = useState(false);
+  const [note, setNote] = useState(false);
+  const [snack, setSnack] = useState(null);
 
   const openCourse = (slug) => { setCourseTitle(''); setCourse(slug); setChapter(null); };
   const back = () => {
@@ -796,10 +834,16 @@ function App() {
       <h1>${title}</h1>
     </header>
     <main class=${course && !practice ? 'stacked' : ''}>${body}</main>
-    ${course && !practice ? html`
+    ${!practice && !discussion ? html`
       <div class="fabstack">
-        <button class="fab slidein" style="background:var(--tertiary);color:#fff"
-                onClick=${() => setTalk(true)}>${I('forum')}Discuss</button>
+        ${course ? html`
+          <button class="fab small" aria-label="Note" style="background:var(--primary-container);
+            color:var(--on-primary-container)" onClick=${() => setNote(true)}>${I('edit_note')}</button>
+          <button class="fab slidein" style="background:var(--tertiary);color:#fff"
+                  onClick=${() => setTalk(true)}>${I('forum')}Discuss</button>`
+        : html`
+          <button class="fab" style="background:var(--primary);color:#fff"
+                  onClick=${() => setNote(true)}>${I('edit_note')}Note</button>`}
       </div>` : null}
     <nav class="navbar">
       ${TABS.map((t) => html`
@@ -810,7 +854,10 @@ function App() {
     </nav>
     ${talk && course ? html`<${GeneralTalk} close=${() => setTalk(false)}
         title=${chapter && chapterTitle ? chapterTitle : courseTitle || course}
-        where=${chapter ? courseTitle : ''} />` : null}`;
+        where=${chapter ? courseTitle : ''} />` : null}
+    ${note ? html`<${NoteSheet} course=${course} courseTitle=${courseTitle} close=${() => setNote(false)}
+        onSaved=${(where) => { setNote(false); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
+    ${snack ? html`<div class="snack">Saved to <code>${snack}</code></div>` : null}`;
 }
 
 render(html`<${App} />`, document.getElementById('app'));
