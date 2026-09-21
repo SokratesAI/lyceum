@@ -1,6 +1,8 @@
 /* Lyceum PWA shell -- build step 4 of projects/sokrates/projects/lyceum/lyceum.md.
    Preact + htm, buildless, per ADR 0010. The Material 3 tokens and the four-tab
    layout are the approved demo's, ported onto the real courses in CouchDB. */
+import { blocksOf, parseBlock, sourceLabel } from './markdown.js';
+
 const { html, render, useState, useEffect, useRef } = window.htmPreact;
 
 const I = (n, cls = '') => html`<span class=${'msym ' + cls}>${n}</span>`;
@@ -152,6 +154,51 @@ function Trace({ claim, sources }) {
     </div>`;
 }
 
+/* Tokens from `markdown.js` -> vnodes. The chapter body is markdown and was
+   printed raw until now, so a reader saw `# Analysis Techniques` and
+   `[source: cohort-analysis.md]` as literal text on the page.
+
+   A source marker becomes a small chip carrying the source's title rather than
+   its filename. It is kept rather than hidden: the marker is the course saying
+   which document a sentence came from, and that is the same thing the GRADE
+   trace is for -- one is the author's attribution, the other is my check of it,
+   and they disagree often enough to be worth seeing side by side.
+
+   Every branch here builds vnodes, never markup. Course text is data and gets
+   escaped by Preact like any other string. */
+function inlineRun(tokens, sources) {
+  return tokens.map((t, i) => {
+    if (t.t === 'strong') return html`<b key=${i}>${t.v}</b>`;
+    if (t.t === 'em') return html`<i key=${i}>${t.v}</i>`;
+    if (t.t === 'code') return html`<code key=${i}>${t.v}</code>`;
+    if (t.t === 'link') return html`<a key=${i} href=${t.href} target="_blank" rel="noopener">${t.v}</a>`;
+    if (t.t === 'source') return html`<span key=${i} class="srcmark">${sourceLabel(t.v, sources)}</span>`;
+    return t.v;
+  });
+}
+
+function block(b, marks, sources) {
+  const run = (tokens) => inlineRun(tokens, sources);
+  // parts of one block, in order; the block's marks go after the last of them
+  if (b.kind === 'mixed') return b.parts.map((part, i) => block(part, i === b.parts.length - 1 ? marks : [], sources));
+  if (b.kind === 'blank') return marks.length ? html`<p class="claim">${marks}</p>` : null;
+  if (b.kind === 'hr') return html`<hr />${marks}`;
+  if (b.kind === 'heading') {
+    const H = 'h' + Math.min(b.level + 1, 6); // the page's own h1 is the app bar
+    return html`<${H} class=${'rh rh' + b.level}>${run(b.content)}${marks}<//>`;
+  }
+  if (b.kind === 'code') return html`<pre class="rcode"><code>${b.text}</code></pre>${marks}`;
+  if (b.kind === 'ul') return html`<ul class="rlist">${b.items.map((it, i) => html`<li key=${i}>${run(it)}</li>`)}</ul>${marks}`;
+  if (b.kind === 'ol') return html`<ol class="rlist" start=${b.start}>${b.items.map((it, i) => html`<li key=${i}>${run(it)}</li>`)}</ol>${marks}`;
+  if (b.kind === 'table') {
+    return html`<div class="rtablewrap"><table class="rtable">
+      ${b.header ? html`<thead><tr>${b.header.map((c, i) => html`<th key=${i}>${run(c)}</th>`)}</tr></thead>` : null}
+      <tbody>${b.rows.map((r, i) => html`<tr key=${i}>${r.map((c, j) => html`<td key=${j}>${run(c)}</td>`)}</tr>`)}</tbody>
+    </table></div>${marks}`;
+  }
+  return html`<p class="claim">${run(b.content)}${marks}</p>`;
+}
+
 /* The reading view -- build step 7, the app's half.
 
    A mark sits inline immediately after the paragraph its claim was drawn from,
@@ -186,10 +233,10 @@ function Chapter({ id }) {
 
   return html`
     <article class="reading read">
-      ${data.chapter.body.split(/\n{2,}/).map((p, n) => {
+      ${blocksOf(data.chapter.body).map((p, n) => {
         const here = byParagraph.get(n) || [];
         return html`<div key=${n}>
-          <p class="claim">${p}${here.map(mark)}</p>
+          ${block(parseBlock(p), here.map(mark), sources)}
           ${here.filter((c) => c.id === open).map((c) => html`<${Trace} key=${c.id} claim=${c} sources=${sources} />`)}
         </div>`;
       })}
