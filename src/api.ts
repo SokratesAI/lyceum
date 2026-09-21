@@ -448,14 +448,14 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
     // refused body leaves no conversation behind.
     const ws = req.body?.workshop;
     let workshop: { project: string; stage: string } | null = null;
-    if (ws != null) {
-      const project = typeof ws?.project === "string" ? ws.project : "";
-      const stage = typeof ws?.stage === "string" ? ws.stage : "";
-      if (!(STAGES as readonly string[]).includes(stage)) return res.status(400).json({ error: "that is not a DSRM stage" });
-      if (!project || !(await couch.get(`project:${project}`))) return res.status(404).json({ error: "no such project" });
-      workshop = { project, stage };
-    }
     try {
+      if (ws != null) {
+        const project = typeof ws?.project === "string" ? ws.project : "";
+        const stage = typeof ws?.stage === "string" ? ws.stage : "";
+        if (!(STAGES as readonly string[]).includes(stage)) return res.status(400).json({ error: "that is not a DSRM stage" });
+        if (!project || !(await couch.get(`project:${project}`))) return res.status(404).json({ error: "no such project" });
+        workshop = { project, stage };
+      }
       const conversationId = await agora.createConversation(`Lyceum — ${title}`);
       const doc = await couch.put({
         _id: discussionId(),
