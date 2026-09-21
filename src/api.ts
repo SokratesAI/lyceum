@@ -8,6 +8,7 @@ import express, { type Router } from "express";
 import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
 import { briefing, contextBlock, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
+import { anchorClaim, paragraphsOf } from "./claims.js";
 
 const byOrder = (a: Doc, b: Doc) => (a.order ?? 0) - (b.order ?? 0);
 
@@ -118,12 +119,49 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
     }
   });
 
+  /** One chapter, with its claim atoms anchored to the paragraphs they came
+   * from -- build step 7, the app's half.
+   *
+   * The marks are the credibility system made visible: a settled finding and an
+   * untested assertion read identically as prose, and the whole point of
+   * extracting claim atoms is that the reader can tell them apart while
+   * reading. `paragraph` says where each mark goes; see `claims.ts` for why it
+   * is a paragraph index rather than a character offset, and why an ambiguous
+   * anchor deliberately returns null instead of guessing.
+   *
+   * A `contradicted` or `unverified` claim gets a mark like any other. That is
+   * the opposite of the rule in `tools.lyceum_cards`, which refuses to build a
+   * card from one, and the two are consistent: practising an assertion the
+   * source contradicts teaches it, whereas *marking* it is the only way the
+   * reader ever finds out.
+   */
   router.get("/chapters/:id", async (req, res, next) => {
     try {
       const doc = await couch.get(req.params.id);
       if (!doc || doc.type !== "chapter") {
         return res.status(404).json({ error: "no such chapter" });
       }
+      const paragraphs = paragraphsOf(doc.body ?? "");
+      const claims = (await couch.allDocs(`claim:${doc._id.slice("chapter:".length)}:`))
+        .sort(byOrder)
+        .map((claim) => ({
+          id: claim._id,
+          text: claim.text,
+          grade: claim.grade,
+          status: claim.status,
+          quote: claim.quote ?? null,
+          sourceIds: claim.sourceIds ?? [],
+          checkedAgainst: claim.checkedAgainst ?? null,
+          paragraph: anchorClaim(paragraphs, claim),
+        }));
+      // Just the sources these claims cite, titled. The trace names the source
+      // it was checked against, and an id is not a name.
+      const cited = new Set(claims.flatMap((c) => c.sourceIds as string[]));
+      const sources = Object.fromEntries(
+        (await couch.allDocs(`source:${doc.courseId.slice("course:".length)}:`))
+          .filter((s) => cited.has(s._id))
+          .map((s) => [s._id, { id: s._id, title: s.title, url: s.url ?? null }]),
+      );
       res.json({
         chapter: {
           id: doc._id,
@@ -132,6 +170,8 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
           courseId: doc.courseId,
           sourceIds: doc.sourceIds ?? [],
         },
+        claims,
+        sources,
       });
     } catch (err) {
       next(err);
