@@ -70,6 +70,30 @@ export async function appendNote(store: VaultStore, path: string, text: string, 
   return { created: !live };
 }
 
+/** Write a new file at `path` holding `text`, as one chunk. Never overwrites:
+ *  a live file already at that path is refused, so a save cannot replace text
+ *  he wrote. A tombstoned document at the path is replaced in place.
+ *
+ *  LiveSync keys a file by its path lowercased and keeps the real casing only
+ *  in `path` (measured: 910 documents under work/, no id with a capital, 393
+ *  paths with one), so the id is lowercased and `path` is written as given. */
+export async function createFile(store: VaultStore, path: string, text: string, now = Date.now()): Promise<void> {
+  const db = dbFor(path);
+  const key = path.toLowerCase();
+  const doc = await store.get(db, key);
+  if (doc && !doc._deleted && !doc.deleted) throw new FileExists(path);
+  const id = chunkId(text);
+  await putChunk(store, db, id, text);
+  const next: Record<string, any> = {
+    _id: key, path, data: "", children: [id], size: Buffer.byteLength(text, "utf8"),
+    ctime: now, mtime: now, type: "plain", eden: {},
+  };
+  if (doc?._rev) next._rev = doc._rev;
+  await store.put(db, next);
+}
+
+export class FileExists extends Error {}
+
 async function putChunk(store: VaultStore, db: string, id: string, data: string) {
   // Content-addressed: if it exists, it already holds exactly this text.
   if (await store.get(db, id)) return;
