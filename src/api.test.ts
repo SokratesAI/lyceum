@@ -990,6 +990,28 @@ describe("workshop", () => {
     expect(list.find((d: Doc) => d.title !== "OKRs").scope).toBe("workshop");
   });
 
+  it("starts a workshop project at stage 1 with the thread it was started in", async () => {
+    const couch = makeStub([...DOCS, project]);
+    const bench = createApp(couch, makeAgora(), store);
+    const made = await request(bench).post("/api/workshop").send({});
+    expect(made.status).toBe(201);
+    const slug = made.body.project.slug;
+    expect(slug).toMatch(/^untitled-/);
+    expect(made.body.discussion.opened).toBe("Workshop project · stage 1, Problem identification");
+
+    // It is a real project: listed, empty, at the first stage, with its own folder.
+    const cards = (await request(bench).get("/api/workshop")).body.projects;
+    expect(cards.find((c: any) => c.slug === slug)).toEqual({ slug, title: "Untitled project", stage: "problem", line: "", fileCount: 0 });
+    expect((await couch.get(`project:${slug}`))!.root).toBe(`work/workshop/${slug}`);
+
+    // Its thread is filed under stage 1 on the bench, and opening it shows the Created card.
+    const stages = (await request(bench).get(`/api/workshop/${slug}`)).body.project.stages;
+    expect(stages[0].discussions.map((d: any) => d.id)).toEqual([made.body.discussion.id]);
+    const thread = await request(bench).get(`/api/discussions/${encodeURIComponent(made.body.discussion.id)}/messages`);
+    expect(thread.body.discussion.opened).toBe("Workshop project · stage 1, Problem identification");
+    expect(thread.body.discussion.project).toBe(slug);
+  });
+
   it("opens Discuss from a project page as a workshop discussion that knows its project", async () => {
     const sent: { id: string; text: string; sender?: string }[] = [];
     const bench = createApp(makeStub([...DOCS, project]), makeAgora(sent), store);

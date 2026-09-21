@@ -487,7 +487,7 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
       // until a reload.
       const last = raw[raw.length - 1];
       res.json({
-        discussion: { id: doc._id, title: doc.title, about: doc.about ?? null },
+        discussion: { id: doc._id, title: doc.title, about: doc.about ?? null, opened: doc.opened ?? null, project: doc.project ?? null },
         messages,
         waiting: Boolean(last && last.sender === OWNER),
       });
@@ -576,6 +576,40 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
   router.get("/workshop", async (_req, res, next) => {
     try {
       res.json({ projects: await listProjects(couch) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /* The demo's "Start a workshop project" chip, and its thread's "Created ·
+   * Workshop project · stage 1, Problem identification" card. A project starts
+   * at the first DSRM stage with no files and a placeholder title -- the demo's
+   * Aristoteles leaves the name to him on purpose -- and it comes with the
+   * discussion it was started in, filed at that stage, so the thread and the
+   * bench point at each other from the first second. Project first, then the
+   * discussion: a project with no thread is still a real, empty project. */
+  router.post("/workshop", async (_req, res, next) => {
+    try {
+      const slug = `untitled-${Date.now().toString(36)}`;
+      const title = "Untitled project";
+      await couch.put({ _id: `project:${slug}`, type: "project", slug, title, stage: "problem", line: "", root: `work/workshop/${slug}`, files: {}, createdAt: new Date().toISOString() });
+      const opened = "Workshop project · stage 1, Problem identification";
+      const about = { kind: "project", text: title, where: "problem identification" };
+      const conversationId = await agora.createConversation(`Lyceum — ${title}`);
+      const doc = await couch.put({
+        _id: discussionId(),
+        type: "discussion",
+        title,
+        scope: "workshop",
+        project: slug,
+        stage: "problem",
+        conversationId,
+        personaId: personaId(),
+        createdAt: new Date().toISOString(),
+        about,
+        opened,
+      });
+      res.status(201).json({ project: { slug, title, stage: "problem" }, discussion: { id: doc._id, title, conversationId, about, opened } });
     } catch (err) {
       next(err);
     }
