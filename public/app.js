@@ -43,14 +43,19 @@ const getJSON = (url) =>
     return r.json();
   });
 
-function useJSON(url) {
-  const [state, setState] = useState({ loading: true });
+/* The last answer for every URL this session has read, so going back to a page
+   draws it at once from here and swaps in the fresh answer when it lands,
+   instead of blanking to Loading on every visit (issue #267). */
+const lastJSON = new Map();
+
+function useJSON(url, { cache = true } = {}) {
+  const [state, setState] = useState(() => (cache && lastJSON.has(url) ? { data: lastJSON.get(url) } : { loading: true }));
   useEffect(() => {
     let live = true;
-    setState({ loading: true });
+    setState(cache && lastJSON.has(url) ? { data: lastJSON.get(url) } : { loading: true });
     getJSON(url).then(
-      (data) => live && setState({ data }),
-      (err) => live && setState({ error: String(err.message || err) }),
+      (data) => { if (cache) lastJSON.set(url, data); if (live) setState({ data }); },
+      (err) => live && !(cache && lastJSON.has(url)) && setState({ error: String(err.message || err) }),
     );
     return () => { live = false; };
   }, [url]);
@@ -575,7 +580,7 @@ const KIND = {
 };
 
 function Practice({ slug, onClose, onAsk }) {
-  const { loading, error, data } = useJSON(`/api/courses/${slug}/practice`);
+  const { loading, error, data } = useJSON(`/api/courses/${slug}/practice`, { cache: false });  // ordered by his last answers; a stale deck would swap cards mid-session
   const [i, setI] = useState(0);
   const [sel, setSel] = useState(null);
   const [text, setText] = useState('');
