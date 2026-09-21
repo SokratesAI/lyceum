@@ -10,6 +10,7 @@ import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
 import { briefing, contextBlock, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
 import { anchorClaim, paragraphsOf } from "./claims.js";
+import { BinaryFile, listProjects, projectPage, readVaultFile } from "./workshop.js";
 
 const byOrder = (a: Doc, b: Doc) => (a.order ?? 0) - (b.order ?? 0);
 
@@ -536,6 +537,44 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
       const { created } = await appendNote(vault, dest, text);
       res.status(201).json({ note: { dest, created } });
     } catch (err) {
+      next(err);
+    }
+  });
+
+  /* The workshop (build step 10). A project lists its own files, and a file is
+   * read only if the project lists it -- this is not a way to read the vault. */
+  router.get("/workshop", async (_req, res, next) => {
+    try {
+      res.json({ projects: await listProjects(couch) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/workshop/:slug", async (req, res, next) => {
+    try {
+      const p = await couch.get(`project:${req.params.slug}`);
+      if (!p) return res.status(404).json({ error: "no such project" });
+      res.json({ project: projectPage(p) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/workshop/:slug/file", async (req, res, next) => {
+    try {
+      const p = await couch.get(`project:${req.params.slug}`);
+      if (!p) return res.status(404).json({ error: "no such project" });
+      const rel = String(req.query.path ?? "");
+      if (!Object.prototype.hasOwnProperty.call(p.files ?? {}, rel)) {
+        return res.status(404).json({ error: "not a file of this project" });
+      }
+      const path = `${p.root}/${rel}`;
+      const text = await readVaultFile(vault, path);
+      if (text === null) return res.status(404).json({ error: "the file is gone from the vault" });
+      res.json({ file: { path, text } });
+    } catch (err) {
+      if (err instanceof BinaryFile) return res.status(415).json({ error: "not a text file" });
       next(err);
     }
   });

@@ -790,6 +790,211 @@ function NoteSheet({ close, onSaved }) {
     </div>`;
 }
 
+/* ---- Workshop (build step 10): the demo's Workshop, Bench, StageSheet,
+   FileList and FileView, on the /api/workshop records. The tools are the
+   demo's; Start runs one as a real Aristoteles discussion and shows his reply
+   in the demo's output card. */
+const TOOLS = [
+  { id: 'endoxa', name: 'Prior art', gloss: 'What has already been said', ic: 'search' },
+  { id: 'horismos', name: 'Define', gloss: 'Pin down the terms', ic: 'label' },
+  { id: 'elenchus', name: 'Interrogate', gloss: 'Question it to breaking point', ic: 'help' },
+  { id: 'aporia', name: 'Impasse', gloss: 'Find where it gets stuck', ic: 'report' },
+  { id: 'causes', name: 'Four causes', gloss: 'Why it exists at all', ic: 'account_tree' },
+  { id: 'syllogism', name: 'Check the logic', gloss: 'Does the conclusion follow', ic: 'rule' },
+  { id: 'falsify', name: 'Falsify', gloss: 'What would prove it wrong', ic: 'science' },
+  { id: 'empeiria', name: 'Evidence plan', gloss: 'How to actually test it', ic: 'fact_check' },
+];
+const STAGE_TOOLS = {
+  problem: ['endoxa', 'elenchus', 'aporia'],
+  objectives: ['horismos', 'syllogism', 'falsify'],
+  design: ['causes', 'aporia', 'horismos'],
+  demo: ['empeiria', 'elenchus'],
+  evaluation: ['falsify', 'empeiria', 'syllogism'],
+  communication: ['endoxa', 'horismos'],
+};
+const DSRM = [
+  { k: 'problem', n: 'Problem', g: 'What is wrong, and why it matters' },
+  { k: 'objectives', n: 'Objectives', g: 'What a solution would have to do' },
+  { k: 'design', n: 'Design & development', g: 'Build the thing' },
+  { k: 'demo', n: 'Demonstration', g: 'Show it works at all' },
+  { k: 'evaluation', n: 'Evaluation', g: 'Measure how well, against the objectives' },
+  { k: 'communication', n: 'Communication', g: 'Write it up so others can use it' },
+];
+const stageIx = (k) => DSRM.findIndex((d) => d.k === k);
+const fileIcon = (e) => e === 'jsx' || e === 'js' ? 'code' : e === 'pptx' ? 'slideshow'
+  : e === 'png' || e === 'svg' ? 'bar_chart' : e === 'zip' ? 'folder_zip' : 'description';
+
+function Workshop({ onOpen }) {
+  const { loading, error, data } = useJSON('/api/workshop');
+  if (loading) return html`<${Loading} />`;
+  if (error) return html`<${Failed} error=${error} />`;
+  return html`
+    ${data.projects.map((t) => html`
+      <div class="card tap" key=${t.slug} onClick=${() => onOpen(t)}>
+        <div class="row" style="margin-bottom:6px">
+          <div class="grow"><h3>${t.title}</h3></div>
+          <span class=${'chip stat ' + (t.stage === 'communication' ? 'theory' : 'hyp')}>
+            ${stageIx(t.stage) + 1}. ${DSRM[stageIx(t.stage)].n}</span>
+        </div>
+        <p style="margin:0 0 8px;font-size:15px;line-height:21px">${t.line}</p>
+        <p class="supporting">${t.fileCount} files</p>
+      </div>`)}`;
+}
+
+function FileList({ files, open }) {
+  return html`
+    <div class="card">
+      ${files.map((f) => html`
+        <div class="filerow" key=${f.path} onClick=${() => open(f)}>
+          <div class="fi">${I(fileIcon(f.ext))}</div>
+          <div class="fn">${f.name}</div>
+          ${f.ext && f.ext !== 'md' ? html`<span class="ft">${f.ext}</span>` : null}
+        </div>`)}
+    </div>`;
+}
+
+function FileView({ slug, file, back }) {
+  const { loading, error, data } = useJSON(`/api/workshop/${encodeURIComponent(slug)}/file?path=${encodeURIComponent(file.path)}`);
+  return html`
+    <div class="docbar">
+      <button class="iconbtn" onClick=${back} style="width:40px;height:40px;border:0;
+        background:none;border-radius:50%;color:var(--primary);cursor:pointer;
+        display:flex;align-items:center;justify-content:center">${I('arrow_back')}</button>
+      <div class="grow"><div class="docpath">${file.path}</div></div>
+    </div>
+    ${loading ? html`<${Loading} />` : error ? html`<${Failed} error=${error} />`
+      : file.ext === 'md' ? html`<div class="doc">${blocksOf(data.file.text).map((p, n) => html`<div key=${n}>${block(parseBlock(p), [], {})}</div>`)}</div>`
+      : html`<pre class="doc" style="white-space:pre-wrap;overflow-x:auto">${data.file.text}</pre>`}`;
+}
+
+function StageSheet({ open, here, close, pick }) {
+  return html`
+    <div class="scrim" onClick=${close}></div>
+    <div class="sheet">
+      <div class="grab"></div>
+      <h3>Design Science Research</h3>
+      ${DSRM.map((d, i) => {
+        const done = i < here, cur = i === here, sel = i === open;
+        return html`
+          <div class=${'li' + (done ? ' read' : '') + (cur ? ' now' : '')} key=${d.k}
+               onClick=${() => { pick(i); close(); }}
+               style=${sel ? { background: 'var(--tertiary-container)', borderRadius: '12px',
+                               margin: '2px -8px', padding: '10px 8px' } : null}>
+            <div class="lead">${done ? I('check') : i + 1}</div>
+            <div class="txt" style="font-size:15px;line-height:20px">
+              ${d.n}<div class="sub">${d.g}</div></div>
+            ${cur ? html`<span class="chip stat hyp">here</span>` : null}
+          </div>`;
+      })}
+    </div>`;
+}
+
+/* A tool run is a real discussion: created, sent the tool's instruction, and
+   read back until Aristoteles has answered. */
+function runTool(project, stage, tool) {
+  const title = `${tool.name} · ${project.title}`;
+  const text = `${tool.name} — ${tool.gloss.toLowerCase()}. Run it against my workshop project "${project.title}", now at DSRM stage ${stageIx(stage.k) + 1}, ${stage.n.toLowerCase()}. The project's statement: ${project.line}`;
+  return postJSON('/api/discussions', { title: title.slice(0, 200) }).then((d) =>
+    postJSON(`/api/discussions/${encodeURIComponent(d.discussion.id)}/messages`, { text }).then(() => d.discussion.id));
+}
+function awaitReply(id) {
+  return getJSON(`/api/discussions/${encodeURIComponent(id)}/messages`).then((data) => {
+    if (data.waiting) return new Promise((r) => setTimeout(r, 3000)).then(() => awaitReply(id));
+    const last = [...data.messages].reverse().find((m) => m.sender !== 'Edvard');
+    return last ? last.text : '';
+  });
+}
+
+function Bench({ slug }) {
+  const { loading, error, data } = useJSON(`/api/workshop/${encodeURIComponent(slug)}`);
+  const [open, setOpen] = useState(null);
+  const [tool, setTool] = useState(null);
+  const [all, setAll] = useState(false);
+  const [file, setFile] = useState(null);
+  const [sheet, setSheet] = useState(false);
+  const [ran, setRan] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [runError, setRunError] = useState(null);
+  if (loading) return html`<${Loading} />`;
+  if (error) return html`<${Failed} error=${error} />`;
+
+  const theory = data.project;
+  const here = stageIx(theory.stage);
+  const at = open === null ? here : open;
+  const stage = DSRM[at];
+  const stageData = theory.stages[at];
+
+  if (file) return html`<${FileView} slug=${slug} file=${file} back=${() => setFile(null)} />`;
+
+  const ids = all ? TOOLS.map((t) => t.id) : STAGE_TOOLS[stage.k];
+  const shown = ids.map((id) => TOOLS.find((t) => t.id === id));
+  const key = tool ? `${at}:${tool.id}` : null;
+  const pick = (i) => { setOpen(i); setTool(null); setAll(false); };
+  const run = () => {
+    setBusy(true); setRunError(null);
+    runTool(theory, stage, tool).then(awaitReply).then(
+      (reply) => { setBusy(false); setRan({ ...ran, [key]: reply }); },
+      (err) => { setBusy(false); setRunError(String(err.message || err)); });
+  };
+
+  return html`
+    <div class="stagebar" onClick=${() => setSheet(true)}>
+      <div class="n">${at + 1}</div>
+      <div class="t">${stage.n}<div class="of">Stage ${at + 1} of 6${at === here ? '' : ' · you are on ' + (here + 1)}</div></div>
+      <div class="pips">
+        ${DSRM.map((d, i) => html`<i key=${d.k} class=${i === at ? 'on' : i < here ? 'done' : ''}></i>`)}
+      </div>
+      ${I('unfold_more')}
+    </div>
+
+    <p class="statement">${theory.line}</p>
+
+    <div class="sectitle s2">Discussions</div>
+    <p class="supporting" style="margin:0 4px 8px">None at this stage.</p>
+    ${stageData.files.length ? html`
+      <div class="sectitle">Files</div>
+      <${FileList} files=${stageData.files} open=${setFile} />` : null}
+
+    <div class="sectitle s3">${all ? 'All tools' : 'Tools for ' + stage.n.toLowerCase()}</div>
+    <div class="rack">
+      ${shown.map((t) => html`
+        <button class=${'tool' + (tool && tool.id === t.id ? ' on' : '')} key=${t.id}
+                onClick=${() => setTool(tool && tool.id === t.id ? null : t)}>
+          ${I(t.ic)}
+          <span class="nm">${t.name}</span>
+          <span class="gr">${t.gloss}</span>
+        </button>`)}
+    </div>
+    <div class="row" style="justify-content:flex-end;margin:-4px 0 8px">
+      <button class="btn text" onClick=${() => { setAll(!all); setTool(null); }}>
+        ${all ? 'Show only this stage' : 'Show all tools'}</button>
+    </div>
+
+    ${tool && ran[key] === undefined ? html`
+      <div class="toolcard">
+        <h4>${tool.name}</h4>
+        <p>${tool.gloss} — run against this project at stage ${at + 1}, ${stage.n.toLowerCase()}.</p>
+        ${runError ? html`<p class="supporting">${runError}</p>` : null}
+        <div class="act">
+          ${busy ? html`<div class="working"><div class="spin"></div>Aristoteles is working…</div>`
+                 : html`<button class="btn start" onClick=${run}>${I('play_arrow')}Start</button>`}
+        </div>
+      </div>` : null}
+
+    ${tool && ran[key] !== undefined ? html`
+      <div class="toolout">
+        <div class="who">${tool.name} · Aristoteles</div>
+        ${blocksOf(ran[key]).map((p, n) => html`<div key=${n}>${block(parseBlock(p), [], {})}</div>`)}
+        <div class="act" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+          <button class="btn text" style="color:var(--on-tertiary-container)"
+                  onClick=${() => { const r = { ...ran }; delete r[key]; setRan(r); }}>Run again</button>
+        </div>
+      </div>` : null}
+
+    ${sheet ? html`<${StageSheet} open=${at} here=${here}
+        close=${() => setSheet(false)} pick=${pick} />` : null}`;
+}
+
 function App() {
   const [tab, setTab] = useState('home');
   const [course, setCourse] = useState(null);
@@ -802,10 +1007,12 @@ function App() {
   const [talk, setTalk] = useState(false);
   const [note, setNote] = useState(false);
   const [snack, setSnack] = useState(null);
+  const [project, setProject] = useState(null);
 
   const openCourse = (slug) => { setCourseTitle(''); setCourse(slug); setChapter(null); };
   const back = () => {
     if (practice) return setPractice(null);
+    if (project) return setProject(null);
     if (discussion) return setDiscussion(null);
     return chapter ? setChapter(null) : setCourse(null);
   };
@@ -820,7 +1027,7 @@ function App() {
       setDiscussion(data.discussion.id);
     }, () => {});
   };
-  const inDetail = Boolean(course) || Boolean(discussion) || Boolean(practice);
+  const inDetail = Boolean(course) || Boolean(discussion) || Boolean(practice) || Boolean(project);
 
   let title = tab === 'home' ? 'Lyceum' : TABS.find((t) => t.id === tab).label;
   let body;
@@ -829,9 +1036,8 @@ function App() {
   else if (course) { title = courseTitle || 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} onTitle=${setCourseTitle} />`; }
   else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} onOpenChapter=${(slug, id, name) => { setCourseTitle(name); setCourse(slug); setChapter(id); }} onPractise=${setPractice} />`;
   else if (tab === 'courses') body = html`<${Courses} onOpen=${openCourse} />`;
-  else if (tab === 'workshop')
-    body = html`<${NotBuiltYet} title="The workshop is not built yet" step="10"
-      what="DSRM stage stepper, tool rack and bench log." />`;
+  else if (tab === 'workshop' && project) { title = project.title; body = html`<${Bench} slug=${project.slug} />`; }
+  else if (tab === 'workshop') body = html`<${Workshop} onOpen=${setProject} />`;
   else if (discussion) {
     title = discussionTitle;
     body = html`<${Discussion} id=${discussion} onTitle=${setDiscussionTitle} />`;
@@ -858,7 +1064,7 @@ function App() {
     <nav class="navbar">
       ${TABS.map((t) => html`
         <button key=${t.id} class=${t.id === tab && !inDetail ? 'on' : ''}
-                onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); setDiscussion(null); setPractice(null); }}>
+                onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); setDiscussion(null); setPractice(null); setProject(null); }}>
           <span class="ind">${I(t.icon)}</span>${t.label}
         </button>`)}
     </nav>

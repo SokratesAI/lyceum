@@ -848,3 +848,85 @@ describe("basisOf", () => {
     expect(basis).not.toContain("Built by");
   });
 });
+
+describe("workshop", () => {
+  const project: Doc = {
+    _id: "project:axiology",
+    type: "project",
+    slug: "axiology",
+    title: "Platform Axiology",
+    stage: "demo",
+    line: "Rank capabilities by developer value.",
+    root: "work/platform/projects/platform axiology",
+    files: {
+      "initials/philos.md": "problem",
+      "ui/tension-explorer.jsx": "demo",
+      "workshop/workshop.md": "demo",
+      "ui/tool.jsx": "demo",
+      "workshop/questions.pptx": "evaluation",
+    },
+  };
+  const vaultDocs: Record<string, Record<string, any>> = {
+    "obsidian/work/platform/projects/platform axiology/workshop/workshop.md": { children: ["h:a", "h:b"] },
+    "obsidian/h:a": { data: "# Work" },
+    "obsidian/h:b": { data: "shop\n" },
+    "obsidian/work/platform/projects/platform axiology/initials/philos.md": { data: "inline text", children: [] },
+    "obsidian/work/platform/projects/platform axiology/secret.md": { data: "not listed" },
+    "obsidian/work/platform/projects/platform axiology/ui/tool.jsx": { type: "newnote", children: ["h:c"] },
+    "obsidian/h:c": { data: Buffer.from("export const x = 1;\n").toString("base64") },
+    "obsidian/work/platform/projects/platform axiology/workshop/questions.pptx": { type: "newnote", data: "UEsDBA==", children: [] },
+  };
+  const store: VaultStore = {
+    async get(db, id) { return vaultDocs[`${db}/${id}`] ?? null; },
+    async put() { throw new Error("the workshop never writes"); },
+  };
+  const app = createApp(makeStub([...DOCS, project]), makeAgora(), store);
+
+  it("lists projects as cards", async () => {
+    const res = await request(app).get("/api/workshop");
+    expect(res.status).toBe(200);
+    expect(res.body.projects).toEqual([
+      { slug: "axiology", title: "Platform Axiology", stage: "demo", line: "Rank capabilities by developer value.", fileCount: 5 },
+    ]);
+  });
+
+  it("places each file in its stage, all six stages present, name without .md", async () => {
+    const res = await request(app).get("/api/workshop/axiology");
+    expect(res.status).toBe(200);
+    const stages = res.body.project.stages;
+    expect(stages.map((s: any) => s.stage)).toEqual(["problem", "objectives", "design", "demo", "evaluation", "communication"]);
+    expect(stages[0].files).toEqual([{ path: "initials/philos.md", name: "philos", ext: "md" }]);
+    expect(stages[3].files).toEqual([
+      { path: "ui/tension-explorer.jsx", name: "tension-explorer.jsx", ext: "jsx" },
+      { path: "workshop/workshop.md", name: "workshop", ext: "md" },
+      { path: "ui/tool.jsx", name: "tool.jsx", ext: "jsx" },
+    ]);
+    expect(stages[5].files).toEqual([]);
+  });
+
+  it("reads a listed file from its chunks or its inline data", async () => {
+    const chunked = await request(app).get("/api/workshop/axiology/file").query({ path: "workshop/workshop.md" });
+    expect(chunked.status).toBe(200);
+    expect(chunked.body.file.text).toBe("# Workshop\n");
+    const inline = await request(app).get("/api/workshop/axiology/file").query({ path: "initials/philos.md" });
+    expect(inline.body.file.text).toBe("inline text");
+  });
+
+  it("decodes a base64 text file and refuses a binary one", async () => {
+    const jsx = await request(app).get("/api/workshop/axiology/file").query({ path: "ui/tool.jsx" });
+    expect(jsx.body.file.text).toBe("export const x = 1;\n");
+    const pptx = await request(app).get("/api/workshop/axiology/file").query({ path: "workshop/questions.pptx" });
+    expect(pptx.status).toBe(415);
+  });
+
+  it("refuses a path the project does not list, even one that exists in the vault", async () => {
+    for (const path of ["secret.md", "../secret.md", "workshop/../secret.md"]) {
+      const res = await request(app).get("/api/workshop/axiology/file").query({ path });
+      expect(res.status).toBe(404);
+    }
+  });
+
+  it("404s an unknown project", async () => {
+    expect((await request(app).get("/api/workshop/nope")).status).toBe(404);
+  });
+});
