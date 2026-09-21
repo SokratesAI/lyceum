@@ -930,6 +930,9 @@ function Bench({ slug }) {
   const [ran, setRan] = useState({});
   const [busy, setBusy] = useState(false);
   const [runError, setRunError] = useState(null);
+  const [saved, setSaved] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
 
@@ -951,6 +954,13 @@ function Bench({ slug }) {
     runTool(theory, stage, tool).then(awaitReply).then(
       (reply) => { setBusy(false); setRan({ ...ran, [key]: reply }); setVersion(version + 1); },
       (err) => { setBusy(false); setRunError(String(err.message || err)); });
+  };
+  // Save as file: the answer becomes a file of this project at this stage.
+  const save = () => {
+    setSaving(true); setSaveError(null);
+    postJSON(`/api/workshop/${encodeURIComponent(slug)}/files`, { tool: tool.name, stage: stage.k, text: ran[key] }).then(
+      (d) => { setSaving(false); setSaved({ ...saved, [key]: d.file.path }); setVersion(version + 1); },
+      (err) => { setSaving(false); setSaveError(String(err.message || err)); });
   };
 
   return html`
@@ -1015,8 +1025,11 @@ function Bench({ slug }) {
         ${blocksOf(ran[key]).map((p, n) => html`<div key=${n}>${block(parseBlock(p), [], {})}</div>`)}
         <div class="act" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
           <button class="btn text" style="color:var(--on-tertiary-container)"
-                  onClick=${() => { const r = { ...ran }; delete r[key]; setRan(r); }}>Run again</button>
+                  onClick=${() => { const r = { ...ran }; delete r[key]; setRan(r); const v = { ...saved }; delete v[key]; setSaved(v); }}>Run again</button>
+          <button class="btn start" disabled=${saving || saved[key] !== undefined} onClick=${save}>
+            ${I(saved[key] ? 'check' : 'note_add')}${saved[key] ? 'Saved' : saving ? 'Saving…' : 'Save as file'}</button>
         </div>
+        ${saveError ? html`<p class="supporting" style="margin-top:8px">${saveError}</p>` : null}
       </div>` : null}
 
     ${sheet ? html`<${StageSheet} open=${at} here=${here}

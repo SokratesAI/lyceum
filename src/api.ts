@@ -4,7 +4,7 @@
  * its chapters and sources, and one chapter's body. They return only what the
  * screen renders, so a course list does not ship six chapter bodies to a phone.
  */
-import { appendNote, httpVault, type VaultStore } from "./vault.js";
+import { appendNote, createFile, FileExists, httpVault, type VaultStore } from "./vault.js";
 import express, { type Router } from "express";
 import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
@@ -62,6 +62,21 @@ export const NOTE_DESTS = [
   "notes.md",
 ];
 const THREAD_LIMIT = 200;
+/** A saved tool output is a whole Aristoteles answer, which runs past a note's
+ *  cap; this only stops a runaway body, CouchDB takes far more. */
+const MAX_FILE_TEXT = 200_000;
+
+/** "2026-09-21 1116", Oslo wall time: the owner's clock, and sortable. */
+export function osloStamp(now = new Date()): string {
+  const f = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Oslo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  });
+  const v = Object.fromEntries(f.formatToParts(now).map((p) => [p.type, p.value]));
+  return `${v.year}-${v.month}-${v.day} ${v.hour}${v.minute}`;
+}
+
+/** A tool name as a file name: characters Obsidian or a path would choke on go. */
+const safeName = (s: string) => s.replace(/[\\/:*?"<>|#^\[\]]/g, "").replace(/\s+/g, " ").trim().slice(0, 80) || "Tool output";
 
 /** Read Aristoteles's markers out of a thread and act on them.
  *
@@ -601,6 +616,42 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
       res.json({ file: { path, text } });
     } catch (err) {
       if (err instanceof BinaryFile) return res.status(415).json({ error: "not a text file" });
+      next(err);
+    }
+  });
+
+  /* The demo's "Save as file" on a tool's output: the answer becomes a new
+   * markdown file in the project's own vault folder, and the project lists it
+   * at the stage the tool ran in, so it shows under that stage's Files. It
+   * never overwrites -- a name already taken gets a number. */
+  router.post("/workshop/:slug/files", async (req, res, next) => {
+    const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+    if (!text) return res.status(400).json({ error: "nothing to save" });
+    if (text.length > MAX_FILE_TEXT) return res.status(400).json({ error: "that output is too long to save" });
+    const stage = req.body?.stage;
+    if (!STAGES.includes(stage)) return res.status(400).json({ error: "stage must be a DSRM stage" });
+    const tool = typeof req.body?.tool === "string" ? safeName(req.body.tool) : "";
+    if (!tool) return res.status(400).json({ error: "a saved output needs its tool's name" });
+    try {
+      const p = await couch.get(`project:${req.params.slug}`);
+      if (!p) return res.status(404).json({ error: "no such project" });
+      const base = `workshop/${tool} ${osloStamp()}`;
+      const body = `# ${tool} · ${p.title}\n\nStage: ${stage} · saved from the Workshop · Aristoteles\n\n${text}\n`;
+      let rel = "";
+      for (let n = 1; n <= 9 && !rel; n++) {
+        const candidate = `${base}${n > 1 ? ` ${n}` : ""}.md`;
+        if (Object.prototype.hasOwnProperty.call(p.files ?? {}, candidate)) continue;
+        try {
+          await createFile(vault, `${p.root}/${candidate}`, body);
+          rel = candidate;
+        } catch (err) {
+          if (!(err instanceof FileExists)) throw err;
+        }
+      }
+      if (!rel) return res.status(409).json({ error: "every name for this file is taken" });
+      await couch.put({ ...p, files: { ...(p.files ?? {}), [rel]: stage } });
+      res.status(201).json({ file: { path: rel, name: rel.split("/").pop()!.slice(0, -3), ext: "md" } });
+    } catch (err) {
       next(err);
     }
   });

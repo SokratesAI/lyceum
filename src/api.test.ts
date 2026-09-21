@@ -950,6 +950,66 @@ describe("workshop", () => {
     expect(list.find((d: Doc) => d.title !== "OKRs").scope).toBe("workshop");
   });
 
+  it("saves a tool's output as a new vault file in the project folder, listed at its stage", async () => {
+    const written: Record<string, Record<string, any>> = {};
+    const w: VaultStore = {
+      async get(db, id) { return written[`${db}/${id}`] ?? vaultDocs[`${db}/${id}`] ?? null; },
+      async put(db, doc) { written[`${db}/${doc._id}`] = doc; },
+    };
+    const docs = [...DOCS, { ...project, files: { ...project.files } }];
+    const bench = createApp(makeStub(docs), makeAgora(), w);
+    const res = await request(bench).post("/api/workshop/axiology/files")
+      .send({ tool: "Falsify / test", stage: "evaluation", text: "- claim one\n- claim two" });
+    expect(res.status).toBe(201);
+    const rel = res.body.file.path;
+    expect(rel).toMatch(/^workshop\/Falsify test \d{4}-\d{2}-\d{2} \d{4}\.md$/);
+    const file = written[`obsidian/work/platform/projects/platform axiology/${rel.toLowerCase()}`];
+    expect(file.path).toBe(`work/platform/projects/platform axiology/${rel}`);
+    expect(file.type).toBe("plain");
+    expect(file.children).toHaveLength(1);
+    expect(written[`obsidian/${file.children[0]}`].data).toBe(
+      "# Falsify test · Platform Axiology\n\nStage: evaluation · saved from the Workshop · Aristoteles\n\n- claim one\n- claim two\n",
+    );
+    const stages = (await request(bench).get("/api/workshop/axiology")).body.project.stages;
+    expect(stages[4].files.map((f: any) => f.path)).toContain(rel);
+    // The saved file reads back through the project, like any file of it.
+    const back = await request(bench).get("/api/workshop/axiology/file").query({ path: rel });
+    expect(back.body.file.text).toContain("- claim two");
+
+    // A second save in the same minute gets a number rather than overwriting.
+    const again = await request(bench).post("/api/workshop/axiology/files").send({ tool: "Falsify / test", stage: "evaluation", text: "other" });
+    expect(again.status).toBe(201);
+    expect(again.body.file.path).toBe(rel.replace(/\.md$/, " 2.md"));
+  });
+
+  it("never overwrites a vault file the project does not list", async () => {
+    const taken: Record<string, Record<string, any>> = {};
+    let stamp = "";
+    const w: VaultStore = {
+      async get(db, id) {
+        if (id.includes("/workshop/lens ") && !id.endsWith(" 2.md") && !(`${db}/${id}` in taken)) {
+          stamp = id; return { _id: id, data: "his own text" };
+        }
+        return taken[`${db}/${id}`] ?? null;
+      },
+      async put(db, doc) { taken[`${db}/${doc._id}`] = doc; },
+    };
+    const bench = createApp(makeStub([...DOCS, { ...project, files: { ...project.files } }]), makeAgora(), w);
+    const res = await request(bench).post("/api/workshop/axiology/files").send({ tool: "Lens", stage: "design", text: "x" });
+    expect(res.status).toBe(201);
+    expect(res.body.file.path).toMatch(/ 2\.md$/);
+    expect(`obsidian/${stamp}` in taken).toBe(false);
+  });
+
+  it("refuses a save with no text, no tool, a bad stage or an unknown project", async () => {
+    const bench = createApp(makeStub([...DOCS, project]), makeAgora(), store);
+    const post = (slug: string, body: object) => request(bench).post(`/api/workshop/${slug}/files`).send(body);
+    expect((await post("axiology", { tool: "Lens", stage: "design", text: " " })).status).toBe(400);
+    expect((await post("axiology", { stage: "design", text: "x" })).status).toBe(400);
+    expect((await post("axiology", { tool: "Lens", stage: "done", text: "x" })).status).toBe(400);
+    expect((await post("nope", { tool: "Lens", stage: "design", text: "x" })).status).toBe(404);
+  });
+
   it("refuses a workshop discussion at no stage or on no project, before Agora is asked", async () => {
     const made: string[] = [];
     const agora: Agora = { ...makeAgora(), async createConversation(n) { made.push(n); return "c"; } };

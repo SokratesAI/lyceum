@@ -66,7 +66,8 @@ export class BinaryFile extends Error {}
  *  handing back bytes as a string. */
 export async function readVaultFile(store: VaultStore, path: string): Promise<string | null> {
   const db = dbFor(path);
-  const doc = await store.get(db, path);
+  // LiveSync ids are the path lowercased; a saved file's name keeps its capitals.
+  const doc = await store.get(db, path.toLowerCase());
   if (!doc || doc._deleted || doc.deleted) return null;
   const children: string[] = doc.children ?? [];
   const binary = doc.type === "newnote";
