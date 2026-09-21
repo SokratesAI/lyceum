@@ -860,13 +860,10 @@ function FileList({ files, open }) {
     </div>`;
 }
 
-function FileView({ slug, file, back }) {
+function FileView({ slug, file }) {
   const { loading, error, data } = useJSON(`/api/workshop/${encodeURIComponent(slug)}/file?path=${encodeURIComponent(file.path)}`);
   return html`
     <div class="docbar">
-      <button class="iconbtn" onClick=${back} style="width:40px;height:40px;border:0;
-        background:none;border-radius:50%;color:var(--primary);cursor:pointer;
-        display:flex;align-items:center;justify-content:center">${I('arrow_back')}</button>
       <div class="grow"><div class="docpath">${file.path}</div></div>
     </div>
     ${loading ? html`<${Loading} />` : error ? html`<${Failed} error=${error} />`
@@ -917,23 +914,19 @@ function awaitReply(id) {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const dayMonth = (iso) => { if (!iso) return ''; const d = new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
 const countLine = (d) => (d.messages === null ? '' : `${d.messages} messages · `);
-function StageDiscussion({ d, back }) {
+function StageDiscussion({ d }) {
   return html`
-    <button class="back" onClick=${back} style="background:none;border:0;padding:4px 0 10px;
-      color:var(--primary);font:500 13px Roboto,sans-serif;cursor:pointer">‹ Back</button>
     <p class="supporting" style="margin:0 0 10px">${countLine(d)}with Aristoteles · ${dayMonth(d.createdAt)}</p>
     <${Discussion} id=${d.id} placeholder="Continue…" />`;
 }
 
-function Bench({ slug, onStage, refresh }) {
+function Bench({ slug, stageIn, setStageIn, refresh, openFile, openDisc }) {
   const [version, setVersion] = useState(0);
   useEffect(() => { if (refresh) setVersion((v) => v + 1); }, [refresh]);
   const { loading, error, data } = useJSON(`/api/workshop/${encodeURIComponent(slug)}${version ? `?v=${version}` : ''}`);
-  const [open, setOpen] = useState(null);
-  const [disc, setDisc] = useState(null);
+  const open = stageIn === undefined ? null : stageIn;
   const [tool, setTool] = useState(null);
   const [all, setAll] = useState(false);
-  const [file, setFile] = useState(null);
   const [sheet, setSheet] = useState(false);
   const [ran, setRan] = useState({});
   const [busy, setBusy] = useState(false);
@@ -949,15 +942,11 @@ function Bench({ slug, onStage, refresh }) {
   const at = open === null ? here : open;
   const stage = DSRM[at];
   const stageData = theory.stages[at];
-  if (onStage) onStage(stage);
-
-  if (file) return html`<${FileView} slug=${slug} file=${file} back=${() => setFile(null)} />`;
-  if (disc) return html`<${StageDiscussion} d=${disc} back=${() => { setDisc(null); setVersion(version + 1); }} />`;
 
   const ids = all ? TOOLS.map((t) => t.id) : STAGE_TOOLS[stage.k];
   const shown = ids.map((id) => TOOLS.find((t) => t.id === id));
   const key = tool ? `${at}:${tool.id}` : null;
-  const pick = (i) => { setOpen(i); setTool(null); setAll(false); };
+  const pick = (i) => { setStageIn(i); setTool(null); setAll(false); };
   const run = () => {
     setBusy(true); setRunError(null);
     runTool(theory, stage, tool).then(awaitReply).then(
@@ -986,7 +975,7 @@ function Bench({ slug, onStage, refresh }) {
 
     <div class="sectitle s2">Discussions</div>
     ${stageData.discussions.length ? stageData.discussions.map((d) => html`
-      <div class="card tap" key=${d.id} onClick=${() => setDisc(d)}>
+      <div class="card tap" key=${d.id} onClick=${() => openDisc(d)}>
         <div class="row">
           <div class="avatar" style="background:var(--secondary-container);
             color:var(--on-secondary-container)">${I('forum')}</div>
@@ -1000,7 +989,7 @@ function Bench({ slug, onStage, refresh }) {
     : html`<p class="supporting" style="margin:0 4px 8px">None at this stage.</p>`}
     ${stageData.files.length ? html`
       <div class="sectitle">Files</div>
-      <${FileList} files=${stageData.files} open=${setFile} />` : null}
+      <${FileList} files=${stageData.files} open=${openFile} />` : null}
 
     <div class="sectitle s3">${all ? 'All tools' : 'Tools for ' + stage.n.toLowerCase()}</div>
     <div class="rack">
@@ -1045,91 +1034,172 @@ function Bench({ slug, onStage, refresh }) {
         close=${() => setSheet(false)} pick=${pick} />` : null}`;
 }
 
+/* One stack of pages, as in the approved demo: every page (course, chapter,
+   practice, workshop project, file, stage discussion, thread) is an entry, the
+   first entry is the tab. Swipe right anywhere to go back -- the page you came
+   from lies still underneath and the page you are on slides off to the right --
+   and the phone's back button pops one page, instantly. */
 function App() {
-  const [tab, setTab] = useState('home');
-  const [course, setCourse] = useState(null);
-  const [chapter, setChapter] = useState(null);
-  const [practice, setPractice] = useState(null);
-  const [discussion, setDiscussion] = useState(null);
-  const [discussionTitle, setDiscussionTitle] = useState('Aristoteles');
-  const [courseTitle, setCourseTitle] = useState('');
-  const [chapterTitle, setChapterTitle] = useState('');
+  const [stack, setStack] = useState([{ kind: 'home' }]);
   const [talk, setTalk] = useState(false);
   const [note, setNote] = useState(false);
   const [snack, setSnack] = useState(null);
-  const [project, setProject] = useState(null);
-  const [benchStage, setBenchStage] = useState(null);
   const [benchRefresh, setBenchRefresh] = useState(0);
+  const [dx, setDx] = useState(0);
+  const [anim, setAnim] = useState(false);
+  const armed = useRef(false);
+  const pendingTab = useRef(null);
+  const drag = useRef(null);
 
-  const openCourse = (slug) => { setCourseTitle(''); setCourse(slug); setChapter(null); };
+  const top = stack[stack.length - 1];
+  const tab = stack[0].kind;
+
+  /* The phone's back button: one history entry stands in for "there is somewhere
+     to go back to". Popping it pops one page; it is re-armed while the stack is deep. */
+  useEffect(() => {
+    const onPop = () => {
+      armed.current = false;
+      const t = pendingTab.current; pendingTab.current = null;
+      setDx(0); setAnim(false); setTalk(false); setNote(false);
+      if (t) setStack(Array.isArray(t) ? t : [{ kind: t }]);
+      else setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  useEffect(() => {
+    if (stack.length > 1 && !armed.current) { history.pushState({ lyceum: 1 }, ''); armed.current = true; }
+  }, [stack.length]);
+
+  const push = (v) => setStack((s) => [...s, v]);
   const back = () => {
-    if (practice) return setPractice(null);
-    if (project) return setProject(null);
-    if (discussion) return setDiscussion(null);
-    return chapter ? setChapter(null) : setCourse(null);
+    if (armed.current) history.back();
+    else { setDx(0); setAnim(false); setStack((s) => (s.length > 1 ? s.slice(0, -1) : s)); }
   };
+  // Replace the whole stack (a tab, or a jump like Home -> a chapter), unwinding the history entry first.
+  const reset = (s) => {
+    if (armed.current) { pendingTab.current = s; history.back(); } else setStack(s);
+  };
+  const toTab = (t) => reset([{ kind: t }]);
+  // A page learns its own title after it loads; it is kept on its entry so going back shows it at once.
+  const patchAt = (depth, p) => setStack((s) => (s[depth] ? [...s.slice(0, depth), { ...s[depth], ...p }, ...s.slice(depth + 1)] : s));
+
   /* "Ask about this" is the gesture that makes practice tutoring rather than
      marking (the spec's Khanmigo line), so it opens a real Aristoteles thread
      rather than a dead button: one discussion, titled after the card. */
   const ask = (title) => {
     postJSON('/api/discussions', { title: title.slice(0, 200) }).then((data) => {
-      setPractice(null);
-      setDiscussionTitle('Aristoteles');
-      setTab('aristoteles');
-      setDiscussion(data.discussion.id);
+      reset([{ kind: 'aristoteles' }, { kind: 'thread', id: data.discussion.id }]);
     }, () => {});
   };
-  const inDetail = Boolean(course) || Boolean(discussion) || Boolean(practice) || Boolean(project);
-  const onProject = tab === 'workshop' && Boolean(project);
-  const canDiscuss = Boolean(course) || onProject;
 
-  let title = tab === 'home' ? 'Lyceum' : TABS.find((t) => t.id === tab).label;
-  let body;
-  if (practice) { title = 'Practice'; body = html`<${Practice} slug=${practice} onClose=${() => setPractice(null)} onAsk=${ask} />`; }
-  else if (chapter) { title = courseTitle || 'Reading'; body = html`<${Chapter} id=${chapter} onTitle=${setChapterTitle} />`; }
-  else if (course) { title = courseTitle || 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} onTitle=${setCourseTitle} />`; }
-  else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} onOpenChapter=${(slug, id, name) => { setCourseTitle(name); setCourse(slug); setChapter(id); }} onPractise=${setPractice} />`;
-  else if (tab === 'courses') body = html`<${Courses} onOpen=${openCourse} />`;
-  else if (tab === 'workshop' && project) { title = project.title; body = html`<${Bench} slug=${project.slug} onStage=${setBenchStage} refresh=${benchRefresh} />`; }
-  else if (tab === 'workshop') body = html`<${Workshop} onOpen=${setProject} />`;
-  else if (discussion) {
-    title = discussionTitle;
-    body = html`<${Discussion} id=${discussion} onTitle=${setDiscussionTitle} />`;
-  }
-  else body = html`<${Discussions} onOpen=${(id) => { setDiscussionTitle('Aristoteles'); setDiscussion(id); }} />`;
+  const view = (v, depth) => {
+    const titled = (t) => patchAt(depth, { title: t });
+    switch (v.kind) {
+      case 'home': return { title: 'Lyceum', body: html`<${Home}
+          onOpen=${(slug) => push({ kind: 'course', slug })}
+          onOpenChapter=${(slug, id, name) => reset([{ kind: 'courses' }, { kind: 'course', slug, title: name }, { kind: 'chapter', id, courseTitle: name }])}
+          onPractise=${(slug) => push({ kind: 'practice', slug })} />` };
+      case 'courses': return { title: 'Courses', body: html`<${Courses} onOpen=${(slug) => push({ kind: 'course', slug })} />` };
+      case 'workshop': return { title: 'Workshop', body: html`<${Workshop} onOpen=${(project) => push({ kind: 'project', project })} />` };
+      case 'aristoteles': return { title: 'Aristoteles', body: html`<${Discussions} onOpen=${(id) => push({ kind: 'thread', id })} />` };
+      case 'course': return { title: v.title || 'Course', discuss: true, body: html`<${Course} slug=${v.slug}
+          onOpenChapter=${(id) => push({ kind: 'chapter', id, courseTitle: v.title })} onTitle=${titled} />` };
+      case 'chapter': return { title: v.courseTitle || 'Reading', discuss: true, body: html`<${Chapter} id=${v.id}
+          onTitle=${(t) => patchAt(depth, { chapterTitle: t })} />` };
+      case 'practice': return { title: 'Practice', practice: true, body: html`<${Practice} slug=${v.slug} onClose=${back} onAsk=${ask} />` };
+      case 'project': return { title: v.project.title, discuss: true, body: html`<${Bench} slug=${v.project.slug}
+          stageIn=${v.stage} setStageIn=${(i) => patchAt(depth, { stage: i })} refresh=${benchRefresh}
+          openFile=${(file) => push({ kind: 'file', slug: v.project.slug, file })}
+          openDisc=${(d) => push({ kind: 'disc', d })} />` };
+      case 'file': return { title: v.file.path.split('/').pop(), body: html`<${FileView} slug=${v.slug} file=${v.file} />` };
+      case 'disc': return { title: v.d.title, chat: true, body: html`<${StageDiscussion} d=${v.d} />` };
+      case 'thread': return { title: v.title || 'Aristoteles', chat: true, body: html`<${Discussion} id=${v.id} onTitle=${titled} />` };
+    }
+  };
+
+  /* Swipe right anywhere to go back. */
+  const W = () => window.innerWidth || 400;
+  const onTouchStart = (e) => {
+    if (stack.length < 2 || anim || talk || note) return;
+    const p = e.touches[0];
+    drag.current = { x: p.clientX, y: p.clientY, dx: 0, lock: null, t: Date.now() };
+  };
+  const onTouchMove = (e) => {
+    const d = drag.current; if (!d) return;
+    const p = e.touches[0]; const mx = p.clientX - d.x, my = p.clientY - d.y;
+    if (d.lock === null) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+      d.lock = (mx > 0 && Math.abs(mx) > Math.abs(my) * 1.2) ? 'x' : 'y';
+    }
+    if (d.lock !== 'x') { drag.current = null; return; }
+    d.dx = Math.max(0, mx); setDx(d.dx);
+  };
+  const onTouchEnd = () => {
+    const d = drag.current; drag.current = null;
+    if (!d || d.lock !== 'x') return;
+    const speed = d.dx / Math.max(1, Date.now() - d.t);
+    const leave = d.dx > W() * 0.33 || speed > 0.6;
+    setAnim(true); setDx(leave ? W() : 0);
+    setTimeout(() => { if (leave) back(); else setAnim(false); }, 230);
+  };
+
+  const page = (v, depth, isTop, p, style) => html`
+    <div class=${'page ' + (isTop ? 'top' : 'under') + (isTop && dx > 0 ? ' moving' : '')}
+         style=${style} key=${'p' + depth + v.kind}>
+      <header class=${'appbar' + (depth > 0 ? ' hasback' : '')}>
+        ${depth > 0 ? html`<button class="iconbtn" onClick=${isTop ? back : null} aria-label="Back">${I('arrow_back')}</button>` : null}
+        <h1>${p.title}</h1>
+      </header>
+      <main class=${p.discuss ? 'stacked' : ''}>${p.body}</main>
+    </div>`;
+
+  const depth = stack.length - 1;
+  const cur = view(top, depth);
+  const under = stack.length > 1 && (dx > 0 || anim) ? stack[depth - 1] : null;
+
+  // Discuss over a course, chapter or workshop project; Note everywhere else.
+  const onProject = top.kind === 'project';
+  const benchStage = onProject ? DSRM[top.stage ?? stageIx(top.project.stage)] : null;
+  const course = stack.find((e) => e.kind === 'course');
+  const talkTitle = top.kind === 'chapter' ? (top.chapterTitle || top.courseTitle || '') : onProject ? top.project.title : (top.title || top.slug || '');
+
+  const fab = cur.chat || cur.practice ? null : cur.discuss ? html`
+    <div class="fabstack">
+      <button class="fab small" aria-label="Note" style="background:var(--primary-container);
+        color:var(--on-primary-container)" onClick=${() => setNote(true)}>${I('edit_note')}</button>
+      <button class="fab slidein" style="background:var(--tertiary);color:#fff"
+              onClick=${() => setTalk(true)}>${I('forum')}Discuss</button>
+    </div>` : html`
+    <div class="fabstack">
+      <button class="fab" style="background:var(--primary);color:#fff"
+              onClick=${() => setNote(true)}>${I('edit_note')}Note</button>
+    </div>`;
 
   return html`
-    <header class=${'appbar' + (inDetail ? ' hasback' : '')}>
-      ${inDetail ? html`<button class="iconbtn" onClick=${back} aria-label="Back">${I('arrow_back')}</button>` : null}
-      <h1>${title}</h1>
-    </header>
-    <main class=${canDiscuss && !practice ? 'stacked' : ''}>${body}</main>
-    ${!practice && !discussion ? html`
-      <div class="fabstack">
-        ${canDiscuss ? html`
-          <button class="fab small" aria-label="Note" style="background:var(--primary-container);
-            color:var(--on-primary-container)" onClick=${() => setNote(true)}>${I('edit_note')}</button>
-          <button class="fab slidein" style="background:var(--tertiary);color:#fff"
-                  onClick=${() => setTalk(true)}>${I('forum')}Discuss</button>`
-        : html`
-          <button class="fab" style="background:var(--primary);color:#fff"
-                  onClick=${() => setNote(true)}>${I('edit_note')}Note</button>`}
-      </div>` : null}
+    <div class="stage" onTouchStart=${onTouchStart} onTouchMove=${onTouchMove}
+         onTouchEnd=${onTouchEnd} onTouchCancel=${onTouchEnd}>
+      ${under ? page(under, depth - 1, false, view(under, depth - 1),
+          { '--dim': (0.18 * (1 - dx / W())).toFixed(3) }) : null}
+      ${page(top, depth, true, cur,
+          { transform: dx ? `translateX(${dx}px)` : 'none',
+            transition: anim ? 'transform .23s cubic-bezier(.2,0,0,1)' : 'none' })}
+    </div>
+    ${dx ? null : fab}
     <nav class="navbar">
       ${TABS.map((t) => html`
-        <button key=${t.id} class=${t.id === tab && !inDetail ? 'on' : ''}
-                onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); setDiscussion(null); setPractice(null); setProject(null); }}>
+        <button key=${t.id} class=${t.id === tab && stack.length === 1 ? 'on' : ''}
+                onClick=${() => toTab(t.id)}>
           <span class="ind">${I(t.icon)}</span>${t.label}
         </button>`)}
     </nav>
-    ${talk && course ? html`<${GeneralTalk} close=${() => setTalk(false)}
-        title=${chapter && chapterTitle ? chapterTitle : courseTitle || course}
-        where=${chapter ? courseTitle : ''} />` : null}
-    ${talk && !course && onProject ? html`<${GeneralTalk}
+    ${talk && !onProject && (top.kind === 'course' || top.kind === 'chapter') ? html`<${GeneralTalk} close=${() => setTalk(false)}
+        title=${talkTitle} where=${top.kind === 'chapter' ? (course && course.title) || top.courseTitle || '' : ''} />` : null}
+    ${talk && onProject ? html`<${GeneralTalk}
         close=${() => { setTalk(false); setBenchRefresh(benchRefresh + 1); }}
-        title=${project.title}
-        about=${{ kind: 'project', text: project.title, ...(benchStage ? { where: benchStage.n.toLowerCase() } : {}) }}
-        workshop=${{ project: project.slug, stage: benchStage ? benchStage.k : project.stage }} />` : null}
+        title=${top.project.title}
+        about=${{ kind: 'project', text: top.project.title, ...(benchStage ? { where: benchStage.n.toLowerCase() } : {}) }}
+        workshop=${{ project: top.project.slug, stage: benchStage ? benchStage.k : top.project.stage }} />` : null}
     ${note ? html`<${NoteSheet} close=${() => setNote(false)}
         onSaved=${(where) => { setNote(false); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
     ${snack ? html`<div class="snack">Saved to <code>${snack}</code></div>` : null}`;
