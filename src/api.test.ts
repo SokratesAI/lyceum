@@ -929,4 +929,44 @@ describe("workshop", () => {
   it("404s an unknown project", async () => {
     expect((await request(app).get("/api/workshop/nope")).status).toBe(404);
   });
+
+  it("lists a discussion opened at a stage under that stage, with its message count", async () => {
+    const bench = createApp(makeStub([...DOCS, project]), makeAgora(), store);
+    const made = await request(bench).post("/api/discussions")
+      .send({ title: "Falsify · Platform Axiology", workshop: { project: "axiology", stage: "evaluation" } });
+    expect(made.status).toBe(201);
+    expect(made.body.discussion.stage).toBe("evaluation");
+    // A plain thread is not a workshop discussion and must not appear on the bench.
+    await request(bench).post("/api/discussions").send({ title: "OKRs" });
+
+    const stages = (await request(bench).get("/api/workshop/axiology")).body.project.stages;
+    expect(stages[4].discussions).toEqual([
+      { id: made.body.discussion.id, title: "Falsify · Platform Axiology", createdAt: expect.any(String), messages: 2 },
+    ]);
+    expect(stages.filter((s: any) => s.discussions.length).length).toBe(1);
+
+    const list = (await request(bench).get("/api/discussions")).body.discussions;
+    expect(list.find((d: Doc) => d.title === "OKRs").scope).toBe("global");
+    expect(list.find((d: Doc) => d.title !== "OKRs").scope).toBe("workshop");
+  });
+
+  it("refuses a workshop discussion at no stage or on no project, before Agora is asked", async () => {
+    const made: string[] = [];
+    const agora: Agora = { ...makeAgora(), async createConversation(n) { made.push(n); return "c"; } };
+    const bench = createApp(makeStub([...DOCS, project]), agora, store);
+    const bad = await request(bench).post("/api/discussions").send({ title: "x", workshop: { project: "axiology", stage: "done" } });
+    expect(bad.status).toBe(400);
+    const none = await request(bench).post("/api/discussions").send({ title: "x", workshop: { project: "nope", stage: "problem" } });
+    expect(none.status).toBe(404);
+    expect(made).toEqual([]);
+  });
+
+  it("keeps the page when one transcript cannot be counted", async () => {
+    const agora: Agora = { ...makeAgora(), async messages() { throw new Error("Agora 500"); } };
+    const bench = createApp(makeStub([...DOCS, project]), agora, store);
+    await request(bench).post("/api/discussions").send({ title: "t", workshop: { project: "axiology", stage: "problem" } });
+    const res = await request(bench).get("/api/workshop/axiology");
+    expect(res.status).toBe(200);
+    expect(res.body.project.stages[0].discussions[0].messages).toBeNull();
+  });
 });

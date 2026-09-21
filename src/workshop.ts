@@ -33,15 +33,21 @@ export function projectCard(p: Doc) {
   };
 }
 
-/** The project page: every stage, with the files placed in it, in the order the record lists them. */
-export function projectPage(p: Doc) {
+/** A discussion as the bench lists it: the demo's "n messages · 2 Jun" row.
+ *  `messages` is null when Agora could not be read for the count. */
+export type StageDiscussion = { id: string; title: string; stage: string; createdAt: string | null; messages: number | null };
+
+/** The project page: every stage, with the files placed in it, in the order the
+ *  record lists them, and the discussions opened at that stage, newest first. */
+export function projectPage(p: Doc, discussions: StageDiscussion[] = []) {
   const files = Object.entries<string>(p.files ?? {});
+  const newest = [...discussions].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   return {
     ...projectCard(p),
     root: p.root,
     stages: STAGES.map((stage) => ({
       stage,
-      discussions: [] as unknown[],
+      discussions: newest.filter((d) => d.stage === stage).map(({ stage: _s, ...d }) => d),
       files: files
         .filter(([, s]) => s === stage)
         .map(([rel]) => ({ path: rel, name: nameOf(rel), ext: extOf(rel) })),

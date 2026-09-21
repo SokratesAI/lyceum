@@ -10,7 +10,7 @@ import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
 import { briefing, contextBlock, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
 import { anchorClaim, paragraphsOf } from "./claims.js";
-import { BinaryFile, listProjects, projectPage, readVaultFile } from "./workshop.js";
+import { BinaryFile, listProjects, projectPage, readVaultFile, STAGES, type StageDiscussion } from "./workshop.js";
 
 const byOrder = (a: Doc, b: Doc) => (a.order ?? 0) - (b.order ?? 0);
 
@@ -408,19 +408,32 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
     if (title.length > 200) return res.status(400).json({ error: "that title is too long" });
     const about = aboutOf(req.body?.about);
     if (about === undefined) return res.status(400).json({ error: "that is not something a discussion can be about" });
+    // A workshop discussion belongs to one project at one DSRM stage, and the
+    // bench lists it there. Checked before Agora is asked for anything, so a
+    // refused body leaves no conversation behind.
+    const ws = req.body?.workshop;
+    let workshop: { project: string; stage: string } | null = null;
+    if (ws != null) {
+      const project = typeof ws?.project === "string" ? ws.project : "";
+      const stage = typeof ws?.stage === "string" ? ws.stage : "";
+      if (!(STAGES as readonly string[]).includes(stage)) return res.status(400).json({ error: "that is not a DSRM stage" });
+      if (!project || !(await couch.get(`project:${project}`))) return res.status(404).json({ error: "no such project" });
+      workshop = { project, stage };
+    }
     try {
       const conversationId = await agora.createConversation(`Lyceum — ${title}`);
       const doc = await couch.put({
         _id: discussionId(),
         type: "discussion",
         title,
-        scope: "global",
+        scope: workshop ? "workshop" : "global",
+        ...(workshop ?? {}),
         conversationId,
         personaId: personaId(),
         createdAt: new Date().toISOString(),
         ...(about ? { about } : {}),
       });
-      res.status(201).json({ discussion: { id: doc._id, title, conversationId, about } });
+      res.status(201).json({ discussion: { id: doc._id, title, conversationId, about, ...(workshop ?? {}) } });
     } catch (err) {
       next(err);
     }
@@ -555,7 +568,20 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
     try {
       const p = await couch.get(`project:${req.params.slug}`);
       if (!p) return res.status(404).json({ error: "no such project" });
-      res.json({ project: projectPage(p) });
+      const mine = (await couch.allDocs("discussion:")).filter((d) => d.project === p.slug);
+      // The count is what he would see on opening it, so it drops what
+      // stripMarkers blanks. One unreadable transcript costs its own count,
+      // not the page.
+      const discussions: StageDiscussion[] = await Promise.all(
+        mine.map(async (d) => {
+          let messages: number | null = null;
+          try {
+            messages = (await agora.messages(d.conversationId, THREAD_LIMIT)).filter((m) => stripMarkers(m.text)).length;
+          } catch {}
+          return { id: d._id, title: d.title, stage: d.stage, createdAt: d.createdAt ?? null, messages };
+        }),
+      );
+      res.json({ project: projectPage(p, discussions) });
     } catch (err) {
       next(err);
     }
