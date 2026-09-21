@@ -1112,9 +1112,9 @@ function App() {
       case 'practice': return { title: 'Practice', practice: true, body: html`<${Practice} slug=${v.slug} onClose=${back} onAsk=${ask} />` };
       case 'project': return { title: v.project.title, discuss: true, body: html`<${Bench} slug=${v.project.slug}
           stageIn=${v.stage} setStageIn=${(i) => patchAt(depth, { stage: i }, v)} refresh=${benchRefresh}
-          openFile=${(file) => push({ kind: 'file', slug: v.project.slug, file })}
+          openFile=${(file) => push({ kind: 'file', slug: v.project.slug, file, project: v.project, stage: v.stage })}
           openDisc=${(d) => push({ kind: 'disc', d })} />` };
-      case 'file': return { title: v.file.path.split('/').pop(), body: html`<${FileView} slug=${v.slug} file=${v.file} />` };
+      case 'file': return { title: v.file.path.split('/').pop(), discuss: true, body: html`<${FileView} slug=${v.slug} file=${v.file} />` };
       case 'disc': return { title: v.d.title, chat: true, body: html`<${StageDiscussion} d=${v.d} />` };
       case 'thread': return { title: v.title || 'Aristoteles', chat: true, body: html`<${Discussion} id=${v.id} onTitle=${titled} />` };
     }
@@ -1160,8 +1160,8 @@ function App() {
   const cur = view(top, depth);
   const under = stack.length > 1 && (dx > 0 || anim) ? stack[depth - 1] : null;
 
-  // Discuss over a course, chapter or workshop project; Note everywhere else.
-  const onProject = top.kind === 'project';
+  // Discuss over a course, chapter, workshop project or one of its files; Note everywhere else.
+  const onProject = top.kind === 'project' || top.kind === 'file';
   const benchStage = onProject ? DSRM[top.stage ?? stageIx(top.project.stage)] : null;
   const course = stack.find((e) => e.kind === 'course');
   const talkTitle = top.kind === 'chapter' ? (top.chapterTitle || top.courseTitle || '') : onProject ? top.project.title : (top.title || top.slug || '');
