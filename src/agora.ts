@@ -19,11 +19,17 @@ export interface Message {
   sender: string;
   text: string;
   ts: string | null;
+  /** Lyceum's own input to the model (agora#102): a memory, a briefing. */
+  context?: boolean;
 }
 
 export interface Agora {
   createConversation(name: string): Promise<string>;
   postMessage(conversationId: string, text: string): Promise<string>;
+  /** Text for Aristoteles that is not from Edvard. Agora stores it under
+   *  Lyceum's own sender with `context: true`; the runner reads it as input
+   *  and starts a turn on it, so it never has to ride inside his message. */
+  postContext(conversationId: string, text: string): Promise<string>;
   messages(conversationId: string, limit: number): Promise<Message[]>;
 }
 
@@ -57,6 +63,7 @@ export function visibleMessages(rows: any[]): Message[] {
       sender: String(m.sender ?? ""),
       text: String(m.text),
       ts: m.ts ?? m.createdAt ?? null,
+      ...(m.context === true ? { context: true } : {}),
     }));
 }
 
@@ -83,6 +90,9 @@ export const personaId = () =>
 /** Edvard is the only human here; Agora attributes a message by sender name,
  *  and `nova_conversations.OWNER_SENDER` uses the same literal. */
 export const OWNER = "Edvard";
+
+/** Who Lyceum's own context messages are from. Never OWNER. */
+export const APP_SENDER = "Lyceum";
 
 async function write(path: string, payload: unknown): Promise<any> {
   const token = process.env.AGORA_TOKEN ?? "";
@@ -119,6 +129,18 @@ export const httpAgora: Agora = {
     });
     const id = body?.message?.id;
     if (!id) throw new Error("Agora accepted the message without an id");
+    return id;
+  },
+
+  async postContext(conversationId: string, text: string) {
+    const body = await write(`/conversations/${conversationId}/notify`, {
+      text,
+      sender: APP_SENDER,
+      context: true,
+      push: false,
+    });
+    const id = body?.message?.id;
+    if (!id) throw new Error("Agora accepted the context without an id");
     return id;
   },
 

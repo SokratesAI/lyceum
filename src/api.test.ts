@@ -114,7 +114,7 @@ const makeStub = (docs: Doc[] = [...DOCS]): Couch => ({
 
 const makeAgora = (
   sent: { id: string; text: string; sender?: string }[] = [],
-  reply?: { sender: string; text: string; ts: string | null }[],
+  reply?: { sender: string; text: string; ts: string | null; context?: boolean }[],
 ): Agora => ({
   async createConversation(name) {
     return `conv-for-${name}`;
@@ -125,6 +125,10 @@ const makeAgora = (
     // it. So the stub records the one sender there is.
     sent.push({ id: conversationId, text, sender: "Edvard" });
     return "msg-1";
+  },
+  async postContext(conversationId, text) {
+    sent.push({ id: conversationId, text, sender: "Lyceum" });
+    return "ctx-1";
   },
   async messages() {
     return (
@@ -326,13 +330,12 @@ describe("discussions with Aristoteles", () => {
       .post(`/api/discussions/${made.body.discussion.id}/messages`)
       .send({ text: "what is a KPI" });
     expect(res.status).toBe(201);
-    // The briefing is also on this wire, from a different sender; his message
-    // is the only one attributed to him.
-    expect(sent).toHaveLength(1);
-    expect(sent[0].id).toBe("conv-for-Lyceum — OKRs");
-    // His words are there, with the memory index riding in front of them.
-    expect(sent[0].text).toContain("what is a KPI");
-    expect(sent[0].text).toContain("<context>");
+    // The briefing goes first under Lyceum's own sender (agora#102); his
+    // message is his words alone (issue #286).
+    expect(sent.map((m) => m.sender)).toEqual(["Lyceum", "Edvard"]);
+    expect(sent[1].id).toBe("conv-for-Lyceum — OKRs");
+    expect(sent[1].text).toBe("what is a KPI");
+    expect(sent[0].text).not.toContain("what is a KPI");
   });
 
   it("opens a thread about one claim and hands the claim to Aristoteles once", async () => {
@@ -352,8 +355,8 @@ describe("discussions with Aristoteles", () => {
     await request(chat).post(`/api/discussions/${id}/messages`).send({ text: "and then?" });
     expect(sent[0].text).toContain('The claim: "Specific goals beat vague ones."');
     expect(sent[0].text).toContain("graded high");
-    expect(sent[0].text).toMatch(/why\?$/);
-    expect(sent[1].text).toBe("and then?");
+    expect(sent[0].sender).toBe("Lyceum");
+    expect(sent.slice(1).map((m) => [m.sender, m.text])).toEqual([["Edvard", "why?"], ["Edvard", "and then?"]]);
   });
 
   it("keeps an ordinary thread about nothing, and refuses an about it cannot read", async () => {
@@ -427,6 +430,7 @@ describe("discussions with Aristoteles", () => {
     const tokenless: Agora = {
       async createConversation() { throw new NoToken(); },
       async postMessage() { throw new NoToken(); },
+      async postContext() { throw new NoToken(); },
       async messages() { throw new NoToken(); },
     };
     const chat = createApp(makeStub([...DOCS]), tokenless);
@@ -502,14 +506,14 @@ describe("Aristoteles's memory", () => {
 
     const id = made.body.discussion.id;
     await request(chat).post(`/api/discussions/${id}/messages`).send({ text: "first" });
-    expect(sent).toHaveLength(1);
+    expect(sent.map((m) => m.sender)).toEqual(["Lyceum", "Edvard"]);
     expect(sent[0].text).toContain("- OKRs — his framework");
     // The index and not the bodies: that is the whole point of an index.
     expect(sent[0].text).not.toContain("the long body");
 
     await request(chat).post(`/api/discussions/${id}/messages`).send({ text: "second" });
-    expect(sent).toHaveLength(2);
-    expect(sent[1].text).toBe("second");
+    expect(sent).toHaveLength(3);
+    expect(sent[2].text).toBe("second");
   });
 
   it("hides the block it rode in on from the page", () => {
@@ -576,8 +580,8 @@ describe("Aristoteles's memory", () => {
     const answers = sent.filter((m) => m.text.includes('Memory "'));
     expect(answers).toHaveLength(1);
     expect(answers[0].text).toContain("goal-setting");
-    // Inside a context block, so it never renders as a bubble.
-    expect(stripMarkers(answers[0].text)).toBe("");
+    // Sent as Lyceum's context, never as his message (issue #286).
+    expect(answers[0].sender).toBe("Lyceum");
   });
 
   it("does not post a body the thread already carries", async () => {
@@ -613,13 +617,14 @@ describe("Aristoteles's memory", () => {
         { sender: "Edvard", text: "hello", ts: "2026-09-20T22:00:00Z" },
         { sender: "Aristoteles", text: "hello back", ts: "2026-09-20T22:00:01Z" },
         { sender: "Edvard", text: contextBlock('Memory "X":\n\nbody'), ts: "2026-09-20T22:00:02Z" },
+        { sender: "Lyceum", text: 'Memory "Y":\n\nbody', ts: "2026-09-20T22:00:03Z", context: true },
       ]),
     );
     const made = await request(chat).post("/api/discussions").send({ title: "OKRs" });
     const read = await request(chat).get(`/api/discussions/${made.body.discussion.id}/messages`);
     expect(read.body.messages.map((m: Doc) => m.text)).toEqual(["hello", "hello back"]);
-    // The recall answer is his message on the wire, so a reply is coming and
-    // the page must keep polling even though the newest bubble is Aristoteles.
+    // The newest row is a recall answer (context from Lyceum), so a reply is
+    // coming and the page must keep polling though the newest bubble is Aristoteles.
     expect(read.body.waiting).toBe(true);
   });
 });
@@ -1057,7 +1062,7 @@ describe("workshop", () => {
 
     await request(bench).post(`/api/discussions/${made.body.discussion.id}/messages`).send({ text: "is value circular?" });
     expect(sent[0].text).toContain('from his workshop project "Platform Axiology", looking at its demonstration stage');
-    expect(sent[0].text).toMatch(/is value circular\?$/);
+    expect(sent[1]).toMatchObject({ sender: "Edvard", text: "is value circular?" });
   });
 
   it("saves a tool's output as a new vault file in the project folder, listed at its stage", async () => {

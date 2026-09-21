@@ -8,7 +8,7 @@ import { appendNote, createFile, dbFor, FileExists, httpVault, type VaultStore }
 import express, { type Router } from "express";
 import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
-import { briefing, contextBlock, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
+import { briefing, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
 import { anchorClaim, paragraphsOf } from "./claims.js";
 import { BinaryFile, listProjects, projectPage, readVaultFile, STAGES, type StageDiscussion } from "./workshop.js";
 
@@ -114,10 +114,10 @@ async function harvest(
   couch: Couch,
   agora: Agora,
   doc: Doc,
-  rows: { sender: string; text: string }[],
+  rows: { sender: string; text: string; context?: boolean }[],
 ) {
   const last = rows[rows.length - 1];
-  if (!last || last.sender === OWNER) return;
+  if (!last || last.sender === OWNER || last.context) return;
 
   for (const file of parseMemories(last.text)) {
     await upsert(couch, file, doc._id);
@@ -130,7 +130,7 @@ async function harvest(
     const text = mem
       ? `Memory "${mem.name}":\n\n${mem.body}`
       : `No memory named "${id}" -- nothing has been written under that name.`;
-    await agora.postMessage(doc.conversationId, contextBlock(text));
+    await agora.postContext(doc.conversationId, text);
   }
 }
 
@@ -494,6 +494,7 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
       // screen without a second sender -- which Agora records but the model
       // never reads.
       const messages = raw
+        .filter((m) => !m.context)
         .map((m) => ({ ...m, text: stripMarkers(m.text) }))
         .filter((m) => m.text);
       // `waiting` is `nova_conversations.thread`'s flag and means the same
@@ -507,7 +508,7 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
       res.json({
         discussion: { id: doc._id, title: doc.title, about: doc.about ?? null, opened: doc.opened ?? null, project: doc.project ?? null },
         messages,
-        waiting: Boolean(last && last.sender === OWNER),
+        waiting: Boolean(last && (last.sender === OWNER || last.context)),
       });
     } catch (err) {
       next(err);
@@ -527,13 +528,12 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
       }
       // The index rides on his first message rather than going in as its own
       // turn: one model call instead of two, and no bubble to hide.
-      let outgoing = text;
       if (!doc.briefed) {
         const brief = briefing(await couch.allDocs("memory:"));
-        outgoing = `${contextBlock(doc.about ? `${brief}\n\n${aboutLine(doc.about)}` : brief)}\n\n${text}`;
+        await agora.postContext(doc.conversationId, doc.about ? `${brief}\n\n${aboutLine(doc.about)}` : brief);
         await couch.put({ ...doc, briefed: true });
       }
-      const id = await agora.postMessage(doc.conversationId, outgoing);
+      const id = await agora.postMessage(doc.conversationId, text);
       res.status(201).json({ messageId: id });
     } catch (err) {
       next(err);
