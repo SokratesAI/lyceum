@@ -357,6 +357,25 @@ const postJSON = (url, body) =>
    reply is written by a model somewhere else and arrives whenever it arrives.
    Polling stops as soon as it lands, because `waiting` is false once the last
    message is his rather than Edvard's. */
+/* The composer is a textarea that starts at one line and grows to ten, as
+   Nova's does -- the approved demo's GrowBox. A textarea also keeps Chrome's
+   autofill strip (passwords, cards, addresses) away: it only attaches to
+   single-line inputs. */
+function GrowBox({ placeholder, value, disabled, onInput }) {
+  const ref = useRef(null);
+  const fit = () => {
+    const el = ref.current; if (!el) return;
+    const cs = getComputedStyle(el);
+    let line = parseFloat(cs.lineHeight); if (!(line > 0)) line = parseFloat(cs.fontSize) * 1.4 || 21;
+    const frame = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, line * 10 + frame) + 'px';
+  };
+  useEffect(fit, [value]);
+  return html`<textarea ref=${ref} rows="1" class="growbox" placeholder=${placeholder}
+    value=${value} disabled=${disabled} onInput=${(e) => { onInput && onInput(e); fit(); }}></textarea>`;
+}
+
 function Discussion({ id, onTitle, placeholder = 'Ask Aristoteles…' }) {
   const [state, setState] = useState({ loading: true });
   const [draft, setDraft] = useState('');
@@ -411,7 +430,7 @@ function Discussion({ id, onTitle, placeholder = 'Ask Aristoteles…' }) {
     </div>
     ${state.error ? html`<p class="supporting">${state.error}</p>` : null}
     <form class="composer pinned" onSubmit=${send}>
-      <input value=${draft} disabled=${sending} placeholder=${placeholder}
+      <${GrowBox} value=${draft} disabled=${sending} placeholder=${placeholder}
              onInput=${(e) => setDraft(e.target.value)} />
       <button class="iconbtn" type="submit" aria-label="Send">${I('send')}</button>
     </form>`;
@@ -453,7 +472,7 @@ function NewThread({ title, about, workshop }) {
     </div>
     ${error ? html`<p class="supporting">${error}</p>` : null}
     <form class="composer" onSubmit=${send}>
-      <input value=${draft} disabled=${sending} placeholder="Ask Aristoteles…"
+      <${GrowBox} value=${draft} disabled=${sending} placeholder="Ask Aristoteles…"
              onInput=${(e) => setDraft(e.target.value)} />
       <button class="iconbtn" type="submit" aria-label="Send">${I(sending ? 'hourglass_empty' : 'send')}</button>
     </form>`;
@@ -1088,6 +1107,17 @@ function Bench({ slug, stageIn, setStageIn, refresh, openFile, openDisc }) {
    and the phone's back button pops one page, instantly. */
 function App() {
   const [stack, setStack] = useState([{ kind: 'home' }]);
+  // While a text box has focus the tab bar and the dial are hidden, so the
+  // composer sits right on the keyboard instead of under a bar riding up on it.
+  useEffect(() => {
+    const isBox = (el) => el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type !== 'checkbox'));
+    const on = (e) => { if (isBox(e.target)) document.body.classList.add('typing'); };
+    const off = () => setTimeout(() => {
+      if (!isBox(document.activeElement)) document.body.classList.remove('typing');
+    }, 0);
+    document.addEventListener('focusin', on); document.addEventListener('focusout', off);
+    return () => { document.removeEventListener('focusin', on); document.removeEventListener('focusout', off); };
+  }, []);
   const [talk, setTalk] = useState(false);
   const [note, setNote] = useState(false);
   const [dial, setDial] = useState(false);

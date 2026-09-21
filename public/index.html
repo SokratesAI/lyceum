@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#F9F9FF">
 <title>Lyceum</title>
 <link rel="manifest" href="/manifest.webmanifest">
@@ -443,6 +443,15 @@
     padding-bottom:8px;}
   .chatscroll > .chat{margin-top:auto;}
   .composer.pinned{flex:0 0 auto;margin:0;padding:8px 0 4px;background:var(--surface);}
+
+  /* ---------- composer: growing textarea, and nothing riding up on the keyboard ---------- */
+  .composer{align-items:flex-end;}
+  .growbox{flex:1;min-height:48px;max-height:none;resize:none;overflow-y:auto;border:0;border-radius:24px;
+    padding:13px 16px;background:var(--surface-container-high);color:var(--on-surface);
+    font:400 15px/21px Roboto,sans-serif;outline:none;display:block;box-sizing:border-box;}
+  body.typing nav.navbar,body.typing .fabstack{display:none;}
+  body.typing main.chatmain{padding-bottom:8px;}
+  body.typing main{padding-bottom:1rem;}
 
   /* ---------- shell additions (build step 4) ---------- */
   .card .chev{color:var(--on-surface-variant);font-size:24px;flex:0 0 auto;}
