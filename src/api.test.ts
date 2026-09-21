@@ -770,3 +770,27 @@ describe("claim marks in the reading view -- build step 7", () => {
     expect(anchorClaim(paragraphs, { text })).toBe(1);
   });
 });
+
+describe("notes", () => {
+  it("stores a note against the course on screen and lists it back", async () => {
+    const notes = createApp(makeStub(), makeAgora());
+    const made = await request(notes).post("/api/notes").send({ text: "  retention is a cohort question  ", course: "analytics" });
+    expect(made.status).toBe(201);
+    expect(made.body.note.text).toBe("retention is a cohort question");
+    expect(made.body.note.courseTitle).toBe("Analytics");
+    await request(notes).post("/api/notes").send({ text: "a loose thought" });
+    const all = await request(notes).get("/api/notes");
+    expect(all.body.notes.map((n: Doc) => n.text).sort()).toEqual(["a loose thought", "retention is a cohort question"]);
+    const one = await request(notes).get("/api/notes?course=analytics");
+    expect(one.body.notes.map((n: Doc) => n.text)).toEqual(["retention is a cohort question"]);
+  });
+
+  it("refuses an empty note and a course that does not exist, and writes nothing", async () => {
+    const docs = [...DOCS];
+    const notes = createApp(makeStub(docs), makeAgora());
+    expect((await request(notes).post("/api/notes").send({ text: "   " })).status).toBe(400);
+    expect((await request(notes).post("/api/notes").send({ text: "x", course: "nope" })).status).toBe(404);
+    expect((await request(notes).post("/api/notes").send({ text: "x", course: 7 })).status).toBe(400);
+    expect(docs.filter((d) => d._id.startsWith("note:"))).toEqual([]);
+  });
+});
