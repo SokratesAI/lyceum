@@ -7,23 +7,33 @@ const { html, render, useState, useEffect, useRef } = window.htmPreact;
 
 const I = (n, cls = '') => html`<span class=${'msym ' + cls}>${n}</span>`;
 
-/* Colour is a requirement, not a finish -- every course carries its own identity
-   colour and icon across card, avatar and header. Blue is established knowledge,
-   amber is his own material (a9s is the platform he runs). */
-const IDENTITY = {
-  analytics:            { c: '#0B57D0', i: 'insights' },
-  'business-finance':   { c: '#00687B', i: 'account_balance' },
-  'product-management': { c: '#6750A4', i: 'category' },
-  'project-management': { c: '#146C2E', i: 'checklist' },
-  'running-a-business': { c: '#8B5000', i: 'storefront' },
-  a9s:                  { c: '#B3261E', i: 'dns' },
+/* The approved demo's container colours and icons, keyed by the real course
+   slugs (the demo used short ids: pm, proj, ana, fin, biz, a9s). */
+const HUE = {
+  'product-management': { bg: '#D3E3FD', fg: '#041E49', ic: 'inventory_2' },
+  'project-management': { bg: '#C4EED0', fg: '#04210C', ic: 'view_timeline' },
+  analytics:            { bg: '#E8DEF8', fg: '#1D192B', ic: 'insights' },
+  'business-finance':   { bg: '#FFDCBE', fg: '#2D1600', ic: 'payments' },
+  'running-a-business': { bg: '#FFD8E4', fg: '#31111D', ic: 'storefront' },
+  a9s:                  { bg: '#B3EBF8', fg: '#001F27', ic: 'dns' },
 };
-const identity = (slug) => IDENTITY[slug] || { c: '#44474E', i: 'menu_book' };
+const hue = (slug) => HUE[slug] || { bg: 'var(--surface-container-high)', fg: 'var(--on-surface)', ic: 'school' };
+
+/* Enrolment and "where you left off" live on this device. The demo kept them
+   in component state; nothing on the server records either yet. */
+const store = {
+  get: (k, d) => { try { return JSON.parse(localStorage.getItem('lyceum.' + k)) ?? d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem('lyceum.' + k, JSON.stringify(v)); } catch { /* private mode */ } },
+};
+const statusOf = (slug) => store.get('status', {})[slug] || 'active';
+const setStatusOf = (slug, s) => store.set('status', { ...store.get('status', {}), [slug]: s });
+const placeOf = (slug) => store.get('place', {})[slug] || null;   // { n, title, id }
+const setPlaceOf = (slug, place) => store.set('place', { ...store.get('place', {}), [slug]: place });
 
 const TABS = [
   { id: 'home',        icon: 'home',   label: 'Home' },
   { id: 'courses',     icon: 'school', label: 'Courses' },
-  { id: 'workshop',    icon: 'science', label: 'Workshop' },
+  { id: 'workshop',    icon: 'handyman', label: 'Workshop' },
   { id: 'aristoteles', icon: 'forum',  label: 'Aristoteles' },
 ];
 
@@ -62,63 +72,122 @@ const NotBuiltYet = ({ title, step, what }) => html`
     <p class="supporting">${what} Build step ${step}.</p>
   </div>`;
 
-function CourseCard({ course, onOpen }) {
-  const { c, i } = identity(course.slug);
-  return html`
-    <div class="card tap" onClick=${() => onOpen(course.slug)}>
-      <div class="row">
-        <div class="avatar" style=${{ background: c }}>${I(i)}</div>
-        <div class="grow">
-          <h3>${course.title}</h3>
-          <p class="supporting">${course.chapterCount} chapters · ${course.sourceCount} sources</p>
-        </div>
-        ${I('chevron_right', 'chev')}
-      </div>
-      <div class="bar"><div class="fill" style=${{ background: c, width: '0%' }}></div></div>
-    </div>`;
-}
 
 function Courses({ onOpen }) {
   const { loading, error, data } = useJSON('/api/courses');
+  const [filter, setFilter] = useState('active');
+  const [, redraw] = useState(0);
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
   if (!data.courses.length) {
     return html`<${NotBuiltYet} title="No courses yet" step="3"
       what="The wiki import has not run against this database." />`;
   }
+  const set = (slug, s) => { setStatusOf(slug, s); redraw((x) => x + 1); };
+  const list = data.courses.filter((c) => statusOf(c.slug) === filter);
+  const segs = [['active', 'Enrolled'], ['paused', 'Paused'], ['available', 'Available']];
   return html`
-    <div class="sectitle">Enrolled</div>
-    ${data.courses.map((c) => html`<${CourseCard} key=${c.slug} course=${c} onOpen=${onOpen} />`)}`;
+    <div class="seg">
+      ${segs.map((s) => html`
+        <button key=${s[0]} class=${filter === s[0] ? 'on' : ''} onClick=${() => setFilter(s[0])}>
+          ${filter === s[0] ? I('check') : null}${s[1]}
+        </button>`)}
+    </div>
+    ${list.map((c) => {
+      const u = hue(c.slug), st = statusOf(c.slug), at = placeOf(c.slug);
+      return html`
+      <div class="card" key=${c.slug}>
+        <div class="row">
+          <div class="avatar" style=${{ background: u.bg, color: u.fg }}>${I(u.ic)}</div>
+          <div class="grow" onClick=${() => onOpen(c.slug)}>
+            <h3>${c.title}</h3>
+            <p class="supporting">
+              ${st === 'available' || !at ? `${c.chapterCount} ${c.chapterCount === 1 ? 'chapter' : 'chapters'} · ${c.sourceCount} ${c.sourceCount === 1 ? 'source' : 'sources'}`
+                : `Chapter ${at.n} of ${c.chapterCount} · ${at.title}`}</p>
+          </div>
+          ${st === 'active' ? html`<button class="btn outlined sm" onClick=${() => set(c.slug, 'paused')}>Pause</button>` : null}
+          ${st === 'paused' ? html`<button class="btn filled sm" onClick=${() => set(c.slug, 'active')}>Resume</button>` : null}
+          ${st === 'available' ? html`<button class="btn filled sm" onClick=${() => set(c.slug, 'active')}>Enrol</button>` : null}
+        </div>
+        ${st !== 'available' ? html`
+          <div class="lin"><i style=${{ width: (at ? (at.n - 1) / c.chapterCount * 100 : 0) + '%',
+            background: st === 'paused' ? 'var(--outline-variant)' : 'var(--primary)' }}></i></div>` : null}
+      </div>`; })}
+    ${!list.length ? html`<p class="supporting" style="text-align:center;padding:32px 0">
+      Nothing here yet.</p>` : null}`;
 }
 
-function Course({ slug, onOpenChapter, onPractise }) {
+function GradeBar({ dist }) {
+  const total = dist.high + dist.mod + dist.low + dist.un || 1;
+  const pc = (n) => (n / total) * 100;
+  const key = [['high', 'g-high', dist.high], ['moderate', 'g-mod', dist.mod],
+               ['low', 'g-low', dist.low], ['ungrounded', 'g-un', dist.un]];
+  return html`
+    <div class="gbar">
+      ${key.filter((k) => k[2]).map((k) => html`<i key=${k[0]} class=${k[1]} style=${{ width: pc(k[2]) + '%' }}></i>`)}
+    </div>
+    <div class="gkey">
+      ${key.filter((k) => k[2]).map((k) => html`
+        <span class="chip stat" key=${k[0]}>
+          <i class=${'dot ' + k[1]} style="width:8px;height:8px;border-radius:50%;display:inline-block"></i>
+          ${k[2]} ${k[0]}
+        </span>`)}
+    </div>`;
+}
+function Course({ slug, onOpenChapter, onTitle }) {
   const { loading, error, data } = useJSON(`/api/courses/${slug}`);
+  const [, redraw] = useState(0);
+  useEffect(() => { if (data && onTitle) onTitle(data.course.title); }, [data]);
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
-  const { c, i } = identity(slug);
+  const u = hue(slug), st = statusOf(slug), at = placeOf(slug);
+  const set = (s) => { setStatusOf(slug, s); redraw((x) => x + 1); };
+  const g = data.grades || {};
+  const dist = { high: g.high || 0, mod: g.moderate || 0, low: g.low || 0, un: g.ungrounded || 0 };
+  const claims = Object.values(g).reduce((a, b) => a + b, 0);
+  const open = (ch, n) => {
+    setPlaceOf(slug, { n, title: ch.title, id: ch.id });
+    onOpenChapter(ch.id);
+  };
   return html`
-    <div class="card el" style=${{ borderTop: `4px solid ${c}` }}>
-      <div class="row">
-        <div class="avatar" style=${{ background: c }}>${I(i)}</div>
-        <div class="grow"><h3>${data.course.title}</h3>
-          <p class="supporting">${data.chapters.length} chapters · ${data.sources.length} sources</p>
-        </div>
-      </div>
-      <div class="qact" style="padding:0;margin-top:12px">
-        <button class="btn tonal" onClick=${() => onPractise(slug)}>${I('school')}Practice</button>
-      </div>
+    <div class="hero" style=${{ '--c-bg': u.bg, '--c-fg': u.fg }}>
+      <h2>${data.course.title}</h2>
+      <p>LLM wiki · ${data.sources.length} researched sources → ${data.chapters.length} pages</p>
     </div>
+
+    <div class="sectitle">Evidence behind this course</div>
+    <div class="card">
+      ${claims
+        ? html`<${GradeBar} dist=${dist} />
+          <p class="supporting" style="margin-top:10px">
+            Across ${claims} claims. Ungrounded means untested — not wrong.</p>`
+        : html`<p class="supporting" style="margin:0">No claims extracted for this course yet.</p>`}
+    </div>
+
     <div class="sectitle">Chapters</div>
-    ${data.chapters.map((ch) => html`
-      <div class="card tap" key=${ch.id} onClick=${() => onOpenChapter(ch.id)}>
-        <div class="row"><div class="grow"><h3>${ch.title}</h3></div>${I('chevron_right', 'chev')}</div>
-      </div>`)}
+    <div class="card">
+      ${data.chapters.map((ch, i) => {
+        const n = i + 1, read = st !== 'available' && at && n < at.n, now = st !== 'available' && at && n === at.n;
+        return html`
+          <div class=${'li' + (read ? ' read' : '') + (now ? ' now' : '')} key=${ch.id} onClick=${() => open(ch, n)}>
+            <div class="lead">${read ? I('check') : n}</div>
+            <div class="txt" style="font-size:15px;line-height:21px">${ch.title}</div>
+            ${I('chevron_right', 'trail')}
+          </div>`;
+      })}
+    </div>
+
     <div class="sectitle">Sources</div>
-    ${data.sources.map((s) => html`
-      <div class="card out" key=${s.id}>
-        <h3>${s.title}</h3>
-        ${s.url ? html`<p class="supporting">${s.url}</p>` : null}
-      </div>`)}`;
+    <div class="card">
+      ${data.sources.map((s) => html`
+        <p class="supporting" key=${s.id} style="margin:6px 0">${s.title}</p>`)}
+    </div>
+
+    <div class="row" style="justify-content:flex-end;margin-top:16px">
+      ${st === 'active' ? html`<button class="btn outlined" onClick=${() => set('paused')}>Pause course</button>` : null}
+      ${st === 'paused' ? html`<button class="btn filled" onClick=${() => set('active')}>Resume course</button>` : null}
+      ${st === 'available' ? html`<button class="btn filled" onClick=${() => set('active')}>Enrol</button>` : null}
+    </div>`;
 }
 
 /* The GRADE mark's class, and the word under it when the trace is open. The
@@ -541,36 +610,44 @@ function Practice({ slug, onClose, onAsk }) {
     </div>`;
 }
 
-function Home({ onOpen, onPractise }) {
+function Home({ onOpen, onOpenChapter, onPractise }) {
   const { loading, error, data } = useJSON('/api/courses');
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
-  const first = data.courses[0];
-  /* The course with the most cards, because only two of the six have any yet
-     and a Practice button that opens an empty session is worse than none. */
-  const practisable = data.courses
-    .filter((c) => c.cardCount > 0)
-    .sort((a, b) => b.cardCount - a.cardCount)[0];
+  const on = data.courses.filter((c) => statusOf(c.slug) === 'active');
+  const ready = on.filter((c) => c.cardCount > 0);
   return html`
     <div class="sectitle">Where you left off</div>
-    ${first
-      ? html`<${CourseCard} course=${first} onOpen=${onOpen} />`
-      : html`<${NotBuiltYet} title="Nothing started yet" step="3" what="No courses are imported." />`}
-    <div class="sectitle">Practice</div>
-    ${practisable
-      ? html`
-        <div class="card practice">
-          <div class="row">
-            <div class="grow"><h3>${practisable.title}</h3>
-              <p class="supporting">${practisable.cardCount} cards, whenever you feel like it. Nothing is due.</p>
-            </div>
+    ${!on.length ? html`<p class="supporting" style="margin:0 4px 4px">
+      No course enrolled. Enrol in one under Courses.</p>` : null}
+    ${on.map((c) => { const u = hue(c.slug), at = placeOf(c.slug); return html`
+      <div class="card tinted tap" key=${c.slug} style=${{ '--c-bg': u.bg, '--c-fg': u.fg }}
+           onClick=${() => (at ? onOpenChapter(c.slug, at.id, c.title) : onOpen(c.slug))}>
+        <div class="row">
+          <div class="avatar" style=${{ background: 'rgba(255,255,255,.55)', color: u.fg }}>${I(u.ic)}</div>
+          <div class="grow">
+            <h3>${c.title}</h3>
+            <p class="supporting">${at ? `${at.n}. ${at.title}` : `${c.chapterCount} ${c.chapterCount === 1 ? 'chapter' : 'chapters'} · not started`}</p>
           </div>
-          <div class="qact" style="padding:0;margin-top:12px">
-            <button class="btn filled" onClick=${() => onPractise(practisable.slug)}>Practice</button>
-          </div>
-        </div>`
-      : html`<${NotBuiltYet} title="No cards yet" step="8"
-          what="Practice cards are generated from claims." />`}`;
+          ${I('chevron_right', 'trail')}
+        </div>
+        <div class="lin"><i style=${{ width: (at ? (at.n - 1) / c.chapterCount * 100 : 0) + '%' }}></i></div>
+      </div>`; })}
+
+    <div class="sectitle s2">Practice, whenever you feel like it</div>
+    <div class="card practice">
+      ${ready.map((c) => html`
+        <div class="li" key=${c.slug}>
+          <div class="lead">${I('style')}</div>
+          <div class="txt">${c.title}
+            <div class="sub">${c.cardCount} cards ready</div></div>
+          <button class="btn filled sm" style="background:var(--secondary);color:#fff"
+                  onClick=${() => onPractise(c.slug)}>Practice</button>
+        </div>`)}
+      ${!ready.length ? html`<p class="supporting" style="margin:0">No cards yet for an enrolled course.</p>` : null}
+    </div>
+    <p class="supporting" style="margin:0 4px 4px">
+      Nothing is due, nothing expires.</p>`;
 }
 
 function App() {
@@ -580,8 +657,9 @@ function App() {
   const [practice, setPractice] = useState(null);
   const [discussion, setDiscussion] = useState(null);
   const [discussionTitle, setDiscussionTitle] = useState('Aristoteles');
+  const [courseTitle, setCourseTitle] = useState('');
 
-  const openCourse = (slug) => { setCourse(slug); setChapter(null); };
+  const openCourse = (slug) => { setCourseTitle(''); setCourse(slug); setChapter(null); };
   const back = () => {
     if (practice) return setPractice(null);
     if (discussion) return setDiscussion(null);
@@ -600,12 +678,12 @@ function App() {
   };
   const inDetail = Boolean(course) || Boolean(discussion) || Boolean(practice);
 
-  let title = TABS.find((t) => t.id === tab).label;
+  let title = tab === 'home' ? 'Lyceum' : TABS.find((t) => t.id === tab).label;
   let body;
   if (practice) { title = 'Practice'; body = html`<${Practice} slug=${practice} onClose=${() => setPractice(null)} onAsk=${ask} />`; }
-  else if (chapter) { title = 'Reading'; body = html`<${Chapter} id=${chapter} />`; }
-  else if (course) { title = 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} onPractise=${setPractice} />`; }
-  else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} onPractise=${setPractice} />`;
+  else if (chapter) { title = courseTitle || 'Reading'; body = html`<${Chapter} id=${chapter} />`; }
+  else if (course) { title = courseTitle || 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} onTitle=${setCourseTitle} />`; }
+  else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} onOpenChapter=${(slug, id, name) => { setCourseTitle(name); setCourse(slug); setChapter(id); }} onPractise=${setPractice} />`;
   else if (tab === 'courses') body = html`<${Courses} onOpen=${openCourse} />`;
   else if (tab === 'workshop')
     body = html`<${NotBuiltYet} title="The workshop is not built yet" step="10"
@@ -621,7 +699,12 @@ function App() {
       ${inDetail ? html`<button class="iconbtn" onClick=${back} aria-label="Back">${I('arrow_back')}</button>` : null}
       <h1>${title}</h1>
     </header>
-    <main>${body}</main>
+    <main class=${course && !practice ? 'stacked' : ''}>${body}</main>
+    ${course && !practice ? html`
+      <div class="fabstack">
+        <button class="fab slidein" style="background:var(--tertiary);color:#fff"
+                onClick=${() => ask(courseTitle || course)}>${I('forum')}Discuss</button>
+      </div>` : null}
     <nav class="navbar">
       ${TABS.map((t) => html`
         <button key=${t.id} class=${t.id === tab && !inDetail ? 'on' : ''}

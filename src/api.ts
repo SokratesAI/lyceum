@@ -102,8 +102,16 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
       if (!course) return res.status(404).json({ error: "no such course" });
       const chapters = await couch.allDocs(`chapter:${req.params.slug}:`);
       const sources = await couch.allDocs(`source:${req.params.slug}:`);
+      // The demo's "Evidence behind this course" bar: how many claims sit at
+      // each GRADE level. A grade outside the four the bar draws is counted
+      // under its own name rather than folded into one of them.
+      const grades: Record<string, number> = {};
+      for (const c of await couch.allDocs(`claim:${req.params.slug}:`)) {
+        grades[c.grade] = (grades[c.grade] ?? 0) + 1;
+      }
       res.json({
         course: { slug: course.slug, title: course.title, spine: course.spine },
+        grades,
         chapters: chapters
           .sort(byOrder)
           .map((c) => ({ id: c._id, slug: c.slug, title: c.title })),

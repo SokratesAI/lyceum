@@ -156,6 +156,11 @@ describe("GET /api/courses/:slug", () => {
     expect(res.body.sources[0].url).toBe("https://example.invalid/paper");
   });
 
+  it("counts the course's claims per GRADE level for the evidence bar", async () => {
+    const res = await request(app).get("/api/courses/analytics");
+    expect(res.body.grades).toEqual({ high: 1, ungrounded: 1 });
+  });
+
   it("404s on a course that is not there", async () => {
     const res = await request(app).get("/api/courses/nope");
     expect(res.status).toBe(404);
