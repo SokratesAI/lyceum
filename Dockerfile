@@ -4,6 +4,9 @@ COPY package.json ./
 RUN npm install
 COPY tsconfig.json ./
 COPY src/ src/
+# the browser modules under public/ are not compiled, but src/markdown.test.ts
+# imports one of them for its types, so tsc needs them present to type-check
+COPY public/ public/
 RUN npm run build
 
 FROM node:24-alpine AS runner
