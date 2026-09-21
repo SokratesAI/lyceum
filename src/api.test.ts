@@ -950,6 +950,23 @@ describe("workshop", () => {
     expect(list.find((d: Doc) => d.title !== "OKRs").scope).toBe("workshop");
   });
 
+  it("opens Discuss from a project page as a workshop discussion that knows its project", async () => {
+    const sent: { id: string; text: string; sender?: string }[] = [];
+    const bench = createApp(makeStub([...DOCS, project]), makeAgora(sent), store);
+    const about = { kind: "project", text: "Platform Axiology", where: "demonstration" };
+    const made = await request(bench).post("/api/discussions")
+      .send({ title: "Platform Axiology", about, workshop: { project: "axiology", stage: "demo" } });
+    expect(made.status).toBe(201);
+    expect(made.body.discussion.about).toEqual(about);
+
+    const stages = (await request(bench).get("/api/workshop/axiology")).body.project.stages;
+    expect(stages[3].discussions.map((d: Doc) => d.id)).toEqual([made.body.discussion.id]);
+
+    await request(bench).post(`/api/discussions/${made.body.discussion.id}/messages`).send({ text: "is value circular?" });
+    expect(sent[0].text).toContain('from his workshop project "Platform Axiology", looking at its demonstration stage');
+    expect(sent[0].text).toMatch(/is value circular\?$/);
+  });
+
   it("saves a tool's output as a new vault file in the project folder, listed at its stage", async () => {
     const written: Record<string, Record<string, any>> = {};
     const w: VaultStore = {
