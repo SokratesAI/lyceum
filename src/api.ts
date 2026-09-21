@@ -12,6 +12,25 @@ import { anchorClaim, paragraphsOf } from "./claims.js";
 
 const byOrder = (a: Doc, b: Doc) => (a.order ?? 0) - (b.order ?? 0);
 
+/**
+ * The demo's basis paragraph under a course's hero: one sentence on what the
+ * course was built from. The demo's own first line reads "Built by a Nova
+ * cycle from 20 researched source files. The wiki pages are the chapters; the
+ * raw/ files are the sources behind them." Every fact in it is read off the
+ * course document the importer wrote, so no model writes this sentence and a
+ * re-import that changes the counts changes it too.
+ */
+export function basisOf(course: Doc, sourceCount: number, chapterCount: number): string {
+  const files = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  const root = course.vaultRoot ?? "";
+  if (course.generatedBy) {
+    const by = course.generatedBy === "llm_wiki" ? "a Nova cycle" : course.generatedBy;
+    const on = course.generated ? ` on ${String(course.generated).slice(0, 10)}` : "";
+    return `Built by ${by}${on} from ${files(sourceCount, "researched source file")} in ${root}raw/. The wiki pages are the chapters; the raw/ files are the sources behind them.`;
+  }
+  return `Hand-written in ${root}, not generated: ${files(chapterCount, "chapter")} and ${files(sourceCount, "source file")}, read as they are.`;
+}
+
 /** A discussion's own id. Random rather than derived from the title: two
  *  threads about the same thing are two threads, and a title can be edited. */
 const discussionId = () => `discussion:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -110,7 +129,12 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
         grades[c.grade] = (grades[c.grade] ?? 0) + 1;
       }
       res.json({
-        course: { slug: course.slug, title: course.title, spine: course.spine },
+        course: {
+          slug: course.slug,
+          title: course.title,
+          spine: course.spine,
+          basis: basisOf(course, sources.length, chapters.length),
+        },
         grades,
         chapters: chapters
           .sort(byOrder)

@@ -154,6 +154,9 @@ function Course({ slug, onOpenChapter, onTitle }) {
       <h2>${data.course.title}</h2>
       <p>LLM wiki · ${data.sources.length} researched sources → ${data.chapters.length} pages</p>
     </div>
+    <div class="card">
+      <p style="margin:0;font-size:15px;line-height:22px">${data.course.basis}</p>
+    </div>
 
     <div class="sectitle">Evidence behind this course</div>
     <div class="card">

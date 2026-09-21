@@ -12,6 +12,7 @@ import type { Couch, Doc } from "./couch.js";
 import { NoToken, visibleMessages, type Agora } from "./agora.js";
 import { briefing, contextBlock, parseMemories, parseRecalls, slug, stripMarkers } from "./memory.js";
 import { anchorClaim, paragraphsOf } from "./claims.js";
+import { basisOf } from "./api.js";
 
 const DOCS: Doc[] = [
   {
@@ -159,6 +160,11 @@ describe("GET /api/courses/:slug", () => {
   it("counts the course's claims per GRADE level for the evidence bar", async () => {
     const res = await request(app).get("/api/courses/analytics");
     expect(res.body.grades).toEqual({ high: 1, ungrounded: 1 });
+  });
+
+  it("carries the demo's basis paragraph, counted from the real course", async () => {
+    const res = await request(app).get("/api/courses/analytics");
+    expect(res.body.course.basis).toContain("2 chapters and 1 source file,");
   });
 
   it("404s on a course that is not there", async () => {
@@ -792,5 +798,21 @@ describe("notes", () => {
     expect((await request(notes).post("/api/notes").send({ text: "x", course: "nope" })).status).toBe(404);
     expect((await request(notes).post("/api/notes").send({ text: "x", course: 7 })).status).toBe(400);
     expect(docs.filter((d) => d._id.startsWith("note:"))).toEqual([]);
+  });
+});
+
+describe("basisOf", () => {
+  it("says a wiki course was built by a cycle, from how many raw files, and where", () => {
+    const course = { generatedBy: "llm_wiki", generated: "2026-09-20 11:30", vaultRoot: "projects/sokrates/wiki/analytics/" };
+    expect(basisOf(course, 24, 9)).toBe(
+      "Built by a Nova cycle on 2026-09-20 from 24 researched source files in projects/sokrates/wiki/analytics/raw/. The wiki pages are the chapters; the raw/ files are the sources behind them.",
+    );
+  });
+
+  it("does not call a hand-written course generated", () => {
+    const course = { generatedBy: null, generated: null, vaultRoot: "work/platform/learn/a9s/" };
+    const basis = basisOf(course, 1, 3);
+    expect(basis).toBe("Hand-written in work/platform/learn/a9s/, not generated: 3 chapters and 1 source file, read as they are.");
+    expect(basis).not.toContain("Built by");
   });
 });
