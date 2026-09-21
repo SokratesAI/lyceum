@@ -288,6 +288,42 @@ describe("discussions with Aristoteles", () => {
     expect(sent[0].text).toContain("<context>");
   });
 
+  it("opens a thread about one claim and hands the claim to Aristoteles once", async () => {
+    const sent: { id: string; text: string; sender?: string }[] = [];
+    const chat = createApp(makeStub([...DOCS]), makeAgora(sent));
+    const about = { kind: "claim", text: "Specific goals beat vague ones.", grade: "high", where: "Goal setting" };
+    const made = await request(chat).post("/api/discussions").send({ title: "Specific goals", about });
+    expect(made.status).toBe(201);
+    const id = made.body.discussion.id;
+
+    const read = await request(chat).get(`/api/discussions/${id}/messages`);
+    expect(read.body.discussion.about).toEqual(about);
+    const list = await request(chat).get("/api/discussions");
+    expect(list.body.discussions[0].about).toEqual(about);
+
+    await request(chat).post(`/api/discussions/${id}/messages`).send({ text: "why?" });
+    await request(chat).post(`/api/discussions/${id}/messages`).send({ text: "and then?" });
+    expect(sent[0].text).toContain('The claim: "Specific goals beat vague ones."');
+    expect(sent[0].text).toContain("graded high");
+    expect(sent[0].text).toMatch(/why\?$/);
+    expect(sent[1].text).toBe("and then?");
+  });
+
+  it("keeps an ordinary thread about nothing, and refuses an about it cannot read", async () => {
+    const sent: { id: string; text: string; sender?: string }[] = [];
+    const chat = createApp(makeStub([...DOCS]), makeAgora(sent));
+    const plain = await request(chat).post("/api/discussions").send({ title: "OKRs" });
+    const read = await request(chat).get(`/api/discussions/${plain.body.discussion.id}/messages`);
+    expect(read.body.discussion.about).toBeNull();
+    await request(chat).post(`/api/discussions/${plain.body.discussion.id}/messages`).send({ text: "hi" });
+    expect(sent[0].text).not.toContain("He opened this discussion");
+
+    for (const about of ["a claim", { kind: "rumour", text: "x" }, { kind: "claim", text: "  " }]) {
+      const res = await request(chat).post("/api/discussions").send({ title: "OKRs", about });
+      expect(res.status).toBe(400);
+    }
+  });
+
   it("refuses an empty message rather than posting a blank one", async () => {
     const sent: { id: string; text: string; sender?: string }[] = [];
     const fresh = makeStub([...DOCS]);
