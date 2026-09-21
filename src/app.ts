@@ -6,13 +6,14 @@ import type { Couch } from "./couch.js";
 import type { Agora } from "./agora.js";
 import { NoToken } from "./agora.js";
 import { apiRouter } from "./api.js";
+import type { VaultStore } from "./vault.js";
 
 /** `dist/` sits beside `public/` in the image, so one `..` is right in both the
  *  compiled build and a `tsx src/` run from the repo root. */
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const publicDir = path.join(here, "..", "public");
 
-export function createApp(couch: Couch, agora: Agora): Express {
+export function createApp(couch: Couch, agora: Agora, vault?: VaultStore): Express {
   const app = express();
 
   app.use(express.json({ limit: "64kb" }));
@@ -21,7 +22,7 @@ export function createApp(couch: Couch, agora: Agora): Express {
     res.status(200).json({ status: "ok" });
   });
 
-  app.use("/api", apiRouter(couch, agora));
+  app.use("/api", apiRouter(couch, agora, vault));
 
   app.use(express.static(publicDir, { extensions: ["html"] }));
 

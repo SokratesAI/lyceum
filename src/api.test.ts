@@ -5,6 +5,7 @@
  * chapter -- because a test written against a shape the importer does not
  * produce would pass against nothing real.
  */
+import type { VaultStore } from "./vault.js";
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "./app.js";
@@ -778,26 +779,57 @@ describe("claim marks in the reading view -- build step 7", () => {
 });
 
 describe("notes", () => {
-  it("stores a note against the course on screen and lists it back", async () => {
-    const notes = createApp(makeStub(), makeAgora());
-    const made = await request(notes).post("/api/notes").send({ text: "  retention is a cohort question  ", course: "analytics" });
-    expect(made.status).toBe(201);
-    expect(made.body.note.text).toBe("retention is a cohort question");
-    expect(made.body.note.courseTitle).toBe("Analytics");
-    await request(notes).post("/api/notes").send({ text: "a loose thought" });
-    const all = await request(notes).get("/api/notes");
-    expect(all.body.notes.map((n: Doc) => n.text).sort()).toEqual(["a loose thought", "retention is a cohort question"]);
-    const one = await request(notes).get("/api/notes?course=analytics");
-    expect(one.body.notes.map((n: Doc) => n.text)).toEqual(["retention is a cohort question"]);
+  function memVault(seed: Record<string, Record<string, any>> = {}) {
+    const docs: Record<string, Record<string, any>> = { ...seed };
+    const store: VaultStore = {
+      async get(db, id) { return docs[`${db}/${id}`] ?? null; },
+      async put(db, doc) { docs[`${db}/${doc._id}`] = { ...doc, _rev: "2-x" }; },
+    };
+    const text = (db: string, id: string) =>
+      (docs[`${db}/${id}`].children as string[]).map((c) => docs[`${db}/${c}`].data).join("");
+    return { docs, store, text };
+  }
+
+  it("appends the note to the chosen vault file and leaves his chunks alone", async () => {
+    const v = memVault({
+      "obsidian/learn.md": { _id: "learn.md", _rev: "1-a", children: ["h:old"], size: 9, ctime: 5, type: "plain" },
+      "obsidian/h:old": { _id: "h:old", data: "# Learn\nx", type: "leaf" },
+    });
+    const app = createApp(makeStub(), makeAgora(), v.store);
+    const res = await request(app).post("/api/notes").send({ text: " retention is\na cohort question ", dest: "learn.md" });
+    expect(res.status).toBe(201);
+    expect(res.body.note).toEqual({ dest: "learn.md", created: false });
+    expect(v.text("obsidian", "learn.md")).toBe("# Learn\nx\n- retention is\n  a cohort question\n");
+    expect(v.docs["obsidian/h:old"].data).toBe("# Learn\nx");
+    expect(v.docs["obsidian/learn.md"]._rev).toBe("2-x");
+    expect(v.docs["obsidian/learn.md"].ctime).toBe(5);
+    expect(v.docs["obsidian/learn.md"].size).toBe(9 + Buffer.byteLength("\n- retention is\n  a cohort question\n"));
   });
 
-  it("refuses an empty note and a course that does not exist, and writes nothing", async () => {
-    const docs = [...DOCS];
-    const notes = createApp(makeStub(docs), makeAgora());
-    expect((await request(notes).post("/api/notes").send({ text: "   " })).status).toBe(400);
-    expect((await request(notes).post("/api/notes").send({ text: "x", course: "nope" })).status).toBe(404);
-    expect((await request(notes).post("/api/notes").send({ text: "x", course: 7 })).status).toBe(400);
-    expect(docs.filter((d) => d._id.startsWith("note:"))).toEqual([]);
+  it("creates a missing file, and routes Nova's folder to Nova's database", async () => {
+    const v = memVault();
+    const app = createApp(makeStub(), makeAgora(), v.store);
+    await request(app).post("/api/notes").send({ text: "a", dest: "work/platform/projects/platform atlas/notes.md" });
+    expect(v.text("obsidian", "work/platform/projects/platform atlas/notes.md")).toBe("- a\n");
+    await request(app).post("/api/notes").send({ text: "b", dest: "projects/sokrates/projects/nova/notes.md" });
+    expect(v.text("nova", "projects/sokrates/projects/nova/notes.md")).toBe("- b\n");
+    expect(v.docs["obsidian/projects/sokrates/projects/nova/notes.md"]).toBeUndefined();
+  });
+
+  it("refuses an empty note and any file that is not one of the demo's chips, and writes nothing", async () => {
+    const v = memVault();
+    const app = createApp(makeStub(), makeAgora(), v.store);
+    expect((await request(app).post("/api/notes").send({ text: "   ", dest: "notes.md" })).status).toBe(400);
+    expect((await request(app).post("/api/notes").send({ text: "x", dest: "journal.md" })).status).toBe(400);
+    expect((await request(app).post("/api/notes").send({ text: "x" })).status).toBe(400);
+    expect(v.docs).toEqual({});
+  });
+
+  it("will not append to a file whose last chunk is missing", async () => {
+    const v = memVault({ "obsidian/notes.md": { _id: "notes.md", _rev: "1-a", children: ["h:gone"], type: "plain" } });
+    const app = createApp(makeStub(), makeAgora(), v.store);
+    expect((await request(app).post("/api/notes").send({ text: "x", dest: "notes.md" })).status).toBe(502);
+    expect(v.docs["obsidian/notes.md"]._rev).toBe("1-a");
   });
 });
 

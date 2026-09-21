@@ -4,6 +4,7 @@
  * its chapters and sources, and one chapter's body. They return only what the
  * screen renders, so a course list does not ship six chapter bodies to a phone.
  */
+import { appendNote, httpVault, type VaultStore } from "./vault.js";
 import express, { type Router } from "express";
 import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
@@ -51,6 +52,14 @@ const RESULTS = ["correct", "missed", "skipped", "seen"];
 const tfLabel = (answer: unknown) => (String(answer).toLowerCase() === "true" ? "True" : "False");
 
 const MAX_TEXT = 8000;
+
+/** The approved demo's "Where it goes" chips, in its order. */
+export const NOTE_DESTS = [
+  "work/platform/projects/platform atlas/notes.md",
+  "projects/sokrates/projects/nova/notes.md",
+  "learn.md",
+  "notes.md",
+];
 const THREAD_LIMIT = 200;
 
 /** Read Aristoteles's markers out of a thread and act on them.
@@ -91,7 +100,7 @@ async function harvest(
   }
 }
 
-export function apiRouter(couch: Couch, agora: Agora): Router {
+export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVault): Router {
   const router = express.Router();
 
   router.get("/courses", async (_req, res, next) => {
@@ -511,51 +520,21 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
 
   /** A note, written down now and shaped later -- the demo's Note sheet.
    *
-   * The demo's "Where it goes" chips were vault paths. This app holds a
-   * database admin of `lyceum` and no vault credential, so a note goes to a
-   * course (the one on screen) or to no course at all, and is stored here as
-   * the app's own state. A note is his, so it is never rewritten by a cycle.
+   * It is appended to one of the vault files the demo's "Where it goes" chips
+   * name, as a markdown bullet, so it is in his vault and not in this app. Only
+   * those files: the path comes from the phone and is checked against the list.
    */
   router.post("/notes", async (req, res, next) => {
     const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
     if (!text) return res.status(400).json({ error: "a note needs some text" });
     if (text.length > MAX_TEXT) return res.status(400).json({ error: "that note is too long" });
-    const course = req.body?.course;
-    if (course !== undefined && course !== null && typeof course !== "string") {
-      return res.status(400).json({ error: "course must be a course slug" });
+    const dest = req.body?.dest;
+    if (typeof dest !== "string" || !NOTE_DESTS.includes(dest)) {
+      return res.status(400).json({ error: "dest must be one of the note files" });
     }
     try {
-      let courseTitle: string | null = null;
-      if (course) {
-        const doc = await couch.get(`course:${course}`);
-        if (!doc || doc.type !== "course") return res.status(404).json({ error: `no such course: ${course}` });
-        courseTitle = doc.title ?? course;
-      }
-      const createdAt = new Date().toISOString();
-      const doc = await couch.put({
-        _id: `note:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type: "note",
-        text,
-        course: course || null,
-        createdAt,
-      });
-      res.status(201).json({ note: { id: doc._id, text, course: course || null, courseTitle, createdAt } });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  /** Notes, newest first; `?course=<slug>` narrows to one course. */
-  router.get("/notes", async (req, res, next) => {
-    const course = typeof req.query.course === "string" ? req.query.course : null;
-    try {
-      const docs = await couch.allDocs("note:");
-      res.json({
-        notes: docs
-          .filter((d) => d.type === "note" && (!course || d.course === course))
-          .map((d) => ({ id: d._id, text: d.text, course: d.course ?? null, createdAt: d.createdAt }))
-          .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
-      });
+      const { created } = await appendNote(vault, dest, text);
+      res.status(201).json({ note: { dest, created } });
     } catch (err) {
       next(err);
     }
