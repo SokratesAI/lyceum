@@ -794,7 +794,7 @@ function noteHere(stack) {
 }
 
 function NoteSheet({ close, onSaved, here }) {
-  const { data } = useJSON('/api/notes/dests', { cache: false });
+  const { data, error: destErr } = useJSON('/api/notes/dests', { cache: false });
   const dests = data ? data.dests : [];
   const inbox = dests.find((d) => d.kind === 'inbox');
   const at = here && dests.find((d) => d.kind === here.kind && d.slug === here.slug);
@@ -835,6 +835,7 @@ function NoteSheet({ close, onSaved, here }) {
           <button class="chip" key=${d.path} onClick=${() => { setPicked(d); setOther(false); }}>
             ${I(destIcon(d))}${d.label}</button>`)}
       </div>` : null}
+      ${destErr ? html`<p class="supporting" style="color:var(--error)">Could not load where notes go. Close and try again; your text is still here.</p>` : null}
       ${err ? html`<p class="supporting" style="color:var(--error)">${err}</p>` : null}
       <div class="sheetact">
         <button class="btn text" onClick=${close}>Cancel</button>
