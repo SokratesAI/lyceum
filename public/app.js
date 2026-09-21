@@ -416,7 +416,7 @@ const AboutClaim = ({ about }) => html`
    Agora conversation on open would leave an empty thread in his list every
    time he looked and closed. The first send creates it, carrying `about`, and
    from then on it is an ordinary Discussion. */
-function NewThread({ title, about }) {
+function NewThread({ title, about, workshop }) {
   const [id, setId] = useState(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -427,7 +427,7 @@ function NewThread({ title, about }) {
     const text = draft.trim();
     if (!text || sending) return;
     setSending(true);
-    postJSON('/api/discussions', { title: title.slice(0, 200), about })
+    postJSON('/api/discussions', { title: title.slice(0, 200), about, ...(workshop ? { workshop } : {}) })
       .then((d) => postJSON(`/api/discussions/${encodeURIComponent(d.discussion.id)}/messages`, { text })
         .then(() => setId(d.discussion.id)))
       .catch((err) => { setSending(false); setError(String(err.message || err)); });
@@ -455,9 +455,11 @@ function ClaimTalk({ claim, where, back }) {
     <${NewThread} title=${claim.text.length > 80 ? claim.text.slice(0, 80).replace(/\s+\S*$/, '') + '…' : claim.text} about=${{ kind: 'claim', text: claim.text, grade: claim.grade, where }} />`;
 }
 
-/* The Discuss button over a course or chapter -- the demo's GeneralTalk, a
-   full-screen sheet over what he was reading rather than a jump to another tab. */
-function GeneralTalk({ title, where, close }) {
+/* The Discuss button over a course, chapter or workshop project -- the demo's
+   GeneralTalk, a full-screen sheet over what he was reading rather than a jump
+   to another tab. From a project it is a workshop discussion at the stage he
+   is looking at, so it lists on the bench there like a tool's thread does. */
+function GeneralTalk({ title, where, close, about, workshop }) {
   return html`
     <div class="quizwrap">
       <div class="qtop">
@@ -469,7 +471,7 @@ function GeneralTalk({ title, where, close }) {
         <button class="btn text" onClick=${close}>Close</button>
       </div>
       <div style="flex:1;overflow-y:auto;padding-top:14px">
-        <${NewThread} title=${title} about=${{ kind: 'chapter', text: title, where }} />
+        <${NewThread} title=${title} about=${about || { kind: 'chapter', text: title, where }} workshop=${workshop} />
       </div>
     </div>`;
 }
@@ -918,8 +920,9 @@ function StageDiscussion({ d, back }) {
     <${Discussion} id=${d.id} placeholder="Continue…" />`;
 }
 
-function Bench({ slug }) {
+function Bench({ slug, onStage, refresh }) {
   const [version, setVersion] = useState(0);
+  useEffect(() => { if (refresh) setVersion((v) => v + 1); }, [refresh]);
   const { loading, error, data } = useJSON(`/api/workshop/${encodeURIComponent(slug)}${version ? `?v=${version}` : ''}`);
   const [open, setOpen] = useState(null);
   const [disc, setDisc] = useState(null);
@@ -941,6 +944,7 @@ function Bench({ slug }) {
   const at = open === null ? here : open;
   const stage = DSRM[at];
   const stageData = theory.stages[at];
+  if (onStage) onStage(stage);
 
   if (file) return html`<${FileView} slug=${slug} file=${file} back=${() => setFile(null)} />`;
   if (disc) return html`<${StageDiscussion} d=${disc} back=${() => { setDisc(null); setVersion(version + 1); }} />`;
@@ -1049,6 +1053,8 @@ function App() {
   const [note, setNote] = useState(false);
   const [snack, setSnack] = useState(null);
   const [project, setProject] = useState(null);
+  const [benchStage, setBenchStage] = useState(null);
+  const [benchRefresh, setBenchRefresh] = useState(0);
 
   const openCourse = (slug) => { setCourseTitle(''); setCourse(slug); setChapter(null); };
   const back = () => {
@@ -1069,6 +1075,8 @@ function App() {
     }, () => {});
   };
   const inDetail = Boolean(course) || Boolean(discussion) || Boolean(practice) || Boolean(project);
+  const onProject = tab === 'workshop' && Boolean(project);
+  const canDiscuss = Boolean(course) || onProject;
 
   let title = tab === 'home' ? 'Lyceum' : TABS.find((t) => t.id === tab).label;
   let body;
@@ -1077,7 +1085,7 @@ function App() {
   else if (course) { title = courseTitle || 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} onTitle=${setCourseTitle} />`; }
   else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} onOpenChapter=${(slug, id, name) => { setCourseTitle(name); setCourse(slug); setChapter(id); }} onPractise=${setPractice} />`;
   else if (tab === 'courses') body = html`<${Courses} onOpen=${openCourse} />`;
-  else if (tab === 'workshop' && project) { title = project.title; body = html`<${Bench} slug=${project.slug} />`; }
+  else if (tab === 'workshop' && project) { title = project.title; body = html`<${Bench} slug=${project.slug} onStage=${setBenchStage} refresh=${benchRefresh} />`; }
   else if (tab === 'workshop') body = html`<${Workshop} onOpen=${setProject} />`;
   else if (discussion) {
     title = discussionTitle;
@@ -1090,10 +1098,10 @@ function App() {
       ${inDetail ? html`<button class="iconbtn" onClick=${back} aria-label="Back">${I('arrow_back')}</button>` : null}
       <h1>${title}</h1>
     </header>
-    <main class=${course && !practice ? 'stacked' : ''}>${body}</main>
+    <main class=${canDiscuss && !practice ? 'stacked' : ''}>${body}</main>
     ${!practice && !discussion ? html`
       <div class="fabstack">
-        ${course ? html`
+        ${canDiscuss ? html`
           <button class="fab small" aria-label="Note" style="background:var(--primary-container);
             color:var(--on-primary-container)" onClick=${() => setNote(true)}>${I('edit_note')}</button>
           <button class="fab slidein" style="background:var(--tertiary);color:#fff"
@@ -1112,6 +1120,11 @@ function App() {
     ${talk && course ? html`<${GeneralTalk} close=${() => setTalk(false)}
         title=${chapter && chapterTitle ? chapterTitle : courseTitle || course}
         where=${chapter ? courseTitle : ''} />` : null}
+    ${talk && !course && onProject ? html`<${GeneralTalk}
+        close=${() => { setTalk(false); setBenchRefresh(benchRefresh + 1); }}
+        title=${project.title}
+        about=${{ kind: 'project', text: project.title, ...(benchStage ? { where: benchStage.n.toLowerCase() } : {}) }}
+        workshop=${{ project: project.slug, stage: benchStage ? benchStage.k : project.stage }} />` : null}
     ${note ? html`<${NoteSheet} close=${() => setNote(false)}
         onSaved=${(where) => { setNote(false); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
     ${snack ? html`<div class="snack">Saved to <code>${snack}</code></div>` : null}`;

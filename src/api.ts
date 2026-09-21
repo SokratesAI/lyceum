@@ -367,7 +367,7 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
    * rather than inferred later.
    */
   /** What a discussion was opened from: a claim he tapped "ask about" on, or
-   * the chapter or course the Discuss button sat over. It is the demo's
+   * the chapter, course or workshop project the Discuss button sat over. It is the demo's
    * ClaimTalk and GeneralTalk -- the thread opens already knowing what it is
    * about, so his first message can be "why?" rather than a paste. `null` for
    * an ordinary thread; `undefined` for a body this refuses. */
@@ -375,7 +375,7 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
   function aboutOf(raw: any): { kind: string; text: string; grade?: string; where?: string } | null | undefined {
     if (raw == null) return null;
     if (typeof raw !== "object") return undefined;
-    const kind = raw.kind === "claim" || raw.kind === "chapter" ? raw.kind : null;
+    const kind = raw.kind === "claim" || raw.kind === "chapter" || raw.kind === "project" ? raw.kind : null;
     const text = typeof raw.text === "string" ? raw.text.trim() : "";
     if (!kind || !text || text.length > MAX_TEXT) return undefined;
     const out: { kind: string; text: string; grade?: string; where?: string } = { kind, text };
@@ -387,7 +387,9 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
     a.kind === "claim"
       ? `He opened this discussion from one claim${a.where ? ` in "${a.where}"` : ""}` +
         `${a.grade ? `, graded ${a.grade}` : ""}. The claim: "${a.text}"`
-      : `He opened this discussion from "${a.text}"${a.where ? `, in the course "${a.where}"` : ""}.`;
+      : a.kind === "project"
+        ? `He opened this discussion from his workshop project "${a.text}"${a.where ? `, looking at its ${a.where} stage` : ""}.`
+        : `He opened this discussion from "${a.text}"${a.where ? `, in the course "${a.where}"` : ""}.`;
 
   router.get("/discussions", async (_req, res, next) => {
     try {
