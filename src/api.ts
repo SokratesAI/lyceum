@@ -317,6 +317,29 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
    * a `stage` on it, which is why `scope` is stored from the first write
    * rather than inferred later.
    */
+  /** What a discussion was opened from: a claim he tapped "ask about" on, or
+   * the chapter or course the Discuss button sat over. It is the demo's
+   * ClaimTalk and GeneralTalk -- the thread opens already knowing what it is
+   * about, so his first message can be "why?" rather than a paste. `null` for
+   * an ordinary thread; `undefined` for a body this refuses. */
+  const GRADES = ["high", "moderate", "low", "ungrounded"];
+  function aboutOf(raw: any): { kind: string; text: string; grade?: string; where?: string } | null | undefined {
+    if (raw == null) return null;
+    if (typeof raw !== "object") return undefined;
+    const kind = raw.kind === "claim" || raw.kind === "chapter" ? raw.kind : null;
+    const text = typeof raw.text === "string" ? raw.text.trim() : "";
+    if (!kind || !text || text.length > MAX_TEXT) return undefined;
+    const out: { kind: string; text: string; grade?: string; where?: string } = { kind, text };
+    if (typeof raw.grade === "string" && GRADES.includes(raw.grade)) out.grade = raw.grade;
+    if (typeof raw.where === "string" && raw.where.trim()) out.where = raw.where.trim().slice(0, 200);
+    return out;
+  }
+  const aboutLine = (a: { kind: string; text: string; grade?: string; where?: string }) =>
+    a.kind === "claim"
+      ? `He opened this discussion from one claim${a.where ? ` in "${a.where}"` : ""}` +
+        `${a.grade ? `, graded ${a.grade}` : ""}. The claim: "${a.text}"`
+      : `He opened this discussion from "${a.text}"${a.where ? `, in the course "${a.where}"` : ""}.`;
+
   router.get("/discussions", async (_req, res, next) => {
     try {
       const docs = await couch.allDocs("discussion:");
@@ -328,6 +351,7 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
             scope: d.scope ?? "global",
             conversationId: d.conversationId,
             createdAt: d.createdAt ?? null,
+            about: d.about ?? null,
           }))
           .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
       });
@@ -348,6 +372,8 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
     const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
     if (!title) return res.status(400).json({ error: "a discussion needs a title" });
     if (title.length > 200) return res.status(400).json({ error: "that title is too long" });
+    const about = aboutOf(req.body?.about);
+    if (about === undefined) return res.status(400).json({ error: "that is not something a discussion can be about" });
     try {
       const conversationId = await agora.createConversation(`Lyceum — ${title}`);
       const doc = await couch.put({
@@ -358,8 +384,9 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
         conversationId,
         personaId: personaId(),
         createdAt: new Date().toISOString(),
+        ...(about ? { about } : {}),
       });
-      res.status(201).json({ discussion: { id: doc._id, title, conversationId } });
+      res.status(201).json({ discussion: { id: doc._id, title, conversationId, about } });
     } catch (err) {
       next(err);
     }
@@ -396,7 +423,7 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
       // until a reload.
       const last = raw[raw.length - 1];
       res.json({
-        discussion: { id: doc._id, title: doc.title },
+        discussion: { id: doc._id, title: doc.title, about: doc.about ?? null },
         messages,
         waiting: Boolean(last && last.sender === OWNER),
       });
@@ -420,7 +447,8 @@ export function apiRouter(couch: Couch, agora: Agora): Router {
       // turn: one model call instead of two, and no bubble to hide.
       let outgoing = text;
       if (!doc.briefed) {
-        outgoing = `${contextBlock(briefing(await couch.allDocs("memory:")))}\n\n${text}`;
+        const brief = briefing(await couch.allDocs("memory:"));
+        outgoing = `${contextBlock(doc.about ? `${brief}\n\n${aboutLine(doc.about)}` : brief)}\n\n${text}`;
         await couch.put({ ...doc, briefed: true });
       }
       const id = await agora.postMessage(doc.conversationId, outgoing);

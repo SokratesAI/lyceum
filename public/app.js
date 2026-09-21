@@ -208,7 +208,7 @@ const TRACE_WORD = {
    and what is it standing on. The verbatim `quote` is the whole value of the
    grounded case -- it is the sentence in the source that the claim was checked
    against, so he can disagree with the check rather than take it on trust. */
-function Trace({ claim, sources }) {
+function Trace({ claim, sources, onAsk }) {
   const grounded = claim.status === 'grounded';
   const cited = (claim.sourceIds || []).map((id) => sources[id]?.title || id);
   return html`
@@ -220,6 +220,9 @@ function Trace({ claim, sources }) {
             own reasoning, and the course keeps it rather than dropping it so that
             you can see it is untested.</div>`}
       ${cited.length ? html`<div style="margin-top:6px"><b>Source:</b> ${cited.join(', ')}</div>` : null}
+      ${onAsk ? html`<div style="display:flex;justify-content:flex-end;margin-top:10px">
+        <button class="btn tonal sm" onClick=${() => onAsk(claim)}>${I('forum')}Ask about this</button>
+      </div>` : null}
     </div>`;
 }
 
@@ -280,11 +283,14 @@ function block(b, marks, sources) {
    under the chapter instead of being attached to a guess. That is eight of the
    2,607 claims in the live database, and putting one of them under the wrong
    paragraph would attribute a source to text that did not produce it. */
-function Chapter({ id }) {
+function Chapter({ id, onTitle }) {
   const { loading, error, data } = useJSON(`/api/chapters/${encodeURIComponent(id)}`);
   const [open, setOpen] = useState(null);
+  const [asking, setAsking] = useState(null);
+  useEffect(() => { if (data && onTitle) onTitle(data.chapter.title); }, [data]);
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
+  if (asking) return html`<${ClaimTalk} claim=${asking} where=${data.chapter.title} back=${() => setAsking(null)} />`;
 
   const claims = data.claims || [];
   const sources = data.sources || {};
@@ -303,10 +309,14 @@ function Chapter({ id }) {
   return html`
     <article class="reading read">
       ${blocksOf(data.chapter.body).map((p, n) => {
+        // A chapter written from a wiki page keeps that page's frontmatter as
+        // its first block. It is skipped, not cut out of the body: claims are
+        // anchored by block index, so removing it would move every mark.
+        if (n === 0 && /^---\n[\s\S]*\n---$/.test(p.trim())) return null;
         const here = byParagraph.get(n) || [];
         return html`<div key=${n}>
           ${block(parseBlock(p), here.map(mark), sources)}
-          ${here.filter((c) => c.id === open).map((c) => html`<${Trace} key=${c.id} claim=${c} sources=${sources} />`)}
+          ${here.filter((c) => c.id === open).map((c) => html`<${Trace} key=${c.id} claim=${c} sources=${sources} onAsk=${setAsking} />`)}
         </div>`;
       })}
     </article>
@@ -318,7 +328,7 @@ function Chapter({ id }) {
           listed here rather than marked in the wrong place.</p>
         ${unplaced.map((c) => html`<div key=${c.id} style="margin-top:10px">
           <p style="margin:0 0 4px">${c.text}${mark(c)}</p>
-          ${c.id === open ? html`<${Trace} claim=${c} sources=${sources} />` : null}
+          ${c.id === open ? html`<${Trace} claim=${c} sources=${sources} onAsk=${setAsking} />` : null}
         </div>`)}
       </div>` : null}`;
 }
@@ -374,8 +384,10 @@ function Discussion({ id, onTitle }) {
 
   if (state.loading) return html`<${Loading} />`;
   if (state.error && !state.data) return html`<${Failed} error=${state.error} />`;
-  const { messages, waiting } = state.data;
+  const { messages, waiting, discussion } = state.data;
+  const about = discussion.about;
   return html`
+    ${about && about.kind === 'claim' ? html`<${AboutClaim} about=${about} />` : null}
     <div class="chat">
       ${messages.map((m, n) => html`
         <div key=${n} class=${'bub ' + (m.sender === 'Edvard' ? 'e' : 'a')}>${m.text}</div>`)}
@@ -384,11 +396,89 @@ function Discussion({ id, onTitle }) {
     </div>
     ${state.error ? html`<p class="supporting">${state.error}</p>` : null}
     <form class="composer" onSubmit=${send}>
-      <input value=${draft} disabled=${sending} placeholder="Ask Aristoteles"
+      <input value=${draft} disabled=${sending} placeholder="Ask Aristoteles…"
              onInput=${(e) => setDraft(e.target.value)} />
       <button class="iconbtn" type="submit" aria-label="Send">${I('send')}</button>
     </form>`;
 }
+
+const AboutClaim = ({ about }) => html`
+  <div class=${'trace' + (about.grade === 'ungrounded' ? ' un' : '')} style="margin-bottom:14px">
+    <div class="lvl">${GRADE_WORD[about.grade] || 'A claim'} · asking about this claim</div>
+    <div>${about.text}</div>
+  </div>`;
+
+/* A thread that does not exist until he says something in it -- the demo's
+   ClaimTalk and GeneralTalk open onto an empty composer, and creating the
+   Agora conversation on open would leave an empty thread in his list every
+   time he looked and closed. The first send creates it, carrying `about`, and
+   from then on it is an ordinary Discussion. */
+function NewThread({ title, about }) {
+  const [id, setId] = useState(null);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState(null);
+  if (id) return html`<${Discussion} id=${id} />`;
+  const send = (e) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    postJSON('/api/discussions', { title: title.slice(0, 200), about })
+      .then((d) => postJSON(`/api/discussions/${encodeURIComponent(d.discussion.id)}/messages`, { text })
+        .then(() => setId(d.discussion.id)))
+      .catch((err) => { setSending(false); setError(String(err.message || err)); });
+  };
+  return html`
+    ${about.kind === 'claim' ? html`<${AboutClaim} about=${about} />` : null}
+    <div class="chat">
+      <div class="bub a">${about.kind === 'claim'
+        ? 'Ask about this claim, or push back on it.'
+        : `Ask about “${about.text}”, or push back on it — that is usually more useful.`}</div>
+    </div>
+    ${error ? html`<p class="supporting">${error}</p>` : null}
+    <form class="composer" onSubmit=${send}>
+      <input value=${draft} disabled=${sending} placeholder="Ask Aristoteles…"
+             onInput=${(e) => setDraft(e.target.value)} />
+      <button class="iconbtn" type="submit" aria-label="Send">${I(sending ? 'hourglass_empty' : 'send')}</button>
+    </form>`;
+}
+
+/* Asking about one claim, inside the reading view -- the demo's ClaimTalk. */
+function ClaimTalk({ claim, where, back }) {
+  return html`
+    <button onClick=${back} style="background:none;border:0;padding:4px 0 10px;
+      color:var(--primary);font:500 13px Roboto,sans-serif;cursor:pointer">‹ Back to chapter</button>
+    <${NewThread} title=${claim.text.length > 80 ? claim.text.slice(0, 80).replace(/\s+\S*$/, '') + '…' : claim.text} about=${{ kind: 'claim', text: claim.text, grade: claim.grade, where }} />`;
+}
+
+/* The Discuss button over a course or chapter -- the demo's GeneralTalk, a
+   full-screen sheet over what he was reading rather than a jump to another tab. */
+function GeneralTalk({ title, where, close }) {
+  return html`
+    <div class="quizwrap">
+      <div class="qtop">
+        <div class="grow" style="flex:1;min-width:0">
+          <div style="font:500 16px/22px Roboto,sans-serif;white-space:nowrap;
+            overflow:hidden;text-overflow:ellipsis">${title}</div>
+          <div class="supporting">New discussion</div>
+        </div>
+        <button class="btn text" onClick=${close}>Close</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding-top:14px">
+        <${NewThread} title=${title} about=${{ kind: 'chapter', text: title, where }} />
+      </div>
+    </div>`;
+}
+
+const ago = (iso) => {
+  if (!iso) return '';
+  const m = (Date.now() - Date.parse(iso)) / 60000;
+  if (m < 60) return `${Math.max(1, Math.round(m))}m`;
+  if (m < 1440) return `${Math.round(m / 60)}h`;
+  if (m < 2880) return 'Yesterday';
+  return `${Math.round(m / 1440)}d`;
+};
 
 /* The global Aristoteles tab: per-topic threads, newest first. The spec's own
    reason for a list rather than one endless chat -- "in those chats I ask Ari
@@ -404,8 +494,8 @@ function Discussions({ onOpen }) {
     );
   useEffect(() => { load(); }, []);
 
-  const start = () => {
-    const title = prompt('What do you want to talk about?');
+  const start = (preset) => {
+    const title = preset || prompt('What do you want to talk about?');
     if (!title || !title.trim() || starting) return;
     setStarting(true);
     postJSON('/api/discussions', { title: title.trim() }).then(
@@ -419,21 +509,25 @@ function Discussions({ onOpen }) {
   const list = state.data.discussions;
   return html`
     ${state.error ? html`<${Failed} error=${state.error} />` : null}
-    <div class="sectitle">Threads</div>
+    <div class="dests" style="margin:4px 0 12px">
+      <button class="chip" onClick=${() => start('Start a workshop project')}>${I('handyman')}Start a workshop project</button>
+      <button class="chip" onClick=${() => start('Build a course')}>${I('school')}Build a course</button>
+      <button class="chip" onClick=${() => start()}>${I(starting ? 'hourglass_empty' : 'add')}New thread</button>
+    </div>
     ${list.length
       ? list.map((d) => html`
           <div class="card tap" key=${d.id} onClick=${() => onOpen(d.id)}>
             <div class="row">
-              <div class="avatar" style=${{ background: '#6750A4' }}>${I('forum')}</div>
+              <div class="lead" style="flex:0 0 40px;height:40px;border-radius:50%;
+                background:var(--primary-container);color:var(--on-primary-container);
+                display:flex;align-items:center;justify-content:center">${I('forum')}</div>
               <div class="grow"><h3>${d.title}</h3>
-                <p class="supporting">${d.createdAt ? d.createdAt.slice(0, 16).replace('T', ' ') : ''}</p>
-              </div>
-              ${I('chevron_right', 'chev')}
+                ${d.about && d.about.where ? html`<p class="supporting">${d.about.where}</p>` : null}</div>
+              <span class="supporting">${ago(d.createdAt)}</span>
             </div>
           </div>`)
       : html`<div class="card out"><h3>No threads yet</h3>
-          <p class="supporting">Start one and Aristoteles answers in it.</p></div>`}
-    <button class="fab" onClick=${start} aria-label="New thread">${I(starting ? 'hourglass_empty' : 'add')}</button>`;
+          <p class="supporting">Start one and Aristoteles answers in it.</p></div>`}`;
 }
 
 /* Practice -- build step 8's half that he can see. The layout, the class names
@@ -658,6 +752,8 @@ function App() {
   const [discussion, setDiscussion] = useState(null);
   const [discussionTitle, setDiscussionTitle] = useState('Aristoteles');
   const [courseTitle, setCourseTitle] = useState('');
+  const [chapterTitle, setChapterTitle] = useState('');
+  const [talk, setTalk] = useState(false);
 
   const openCourse = (slug) => { setCourseTitle(''); setCourse(slug); setChapter(null); };
   const back = () => {
@@ -681,7 +777,7 @@ function App() {
   let title = tab === 'home' ? 'Lyceum' : TABS.find((t) => t.id === tab).label;
   let body;
   if (practice) { title = 'Practice'; body = html`<${Practice} slug=${practice} onClose=${() => setPractice(null)} onAsk=${ask} />`; }
-  else if (chapter) { title = courseTitle || 'Reading'; body = html`<${Chapter} id=${chapter} />`; }
+  else if (chapter) { title = courseTitle || 'Reading'; body = html`<${Chapter} id=${chapter} onTitle=${setChapterTitle} />`; }
   else if (course) { title = courseTitle || 'Course'; body = html`<${Course} slug=${course} onOpenChapter=${setChapter} onTitle=${setCourseTitle} />`; }
   else if (tab === 'home') body = html`<${Home} onOpen=${openCourse} onOpenChapter=${(slug, id, name) => { setCourseTitle(name); setCourse(slug); setChapter(id); }} onPractise=${setPractice} />`;
   else if (tab === 'courses') body = html`<${Courses} onOpen=${openCourse} />`;
@@ -703,7 +799,7 @@ function App() {
     ${course && !practice ? html`
       <div class="fabstack">
         <button class="fab slidein" style="background:var(--tertiary);color:#fff"
-                onClick=${() => ask(courseTitle || course)}>${I('forum')}Discuss</button>
+                onClick=${() => setTalk(true)}>${I('forum')}Discuss</button>
       </div>` : null}
     <nav class="navbar">
       ${TABS.map((t) => html`
@@ -711,7 +807,10 @@ function App() {
                 onClick=${() => { setTab(t.id); setCourse(null); setChapter(null); setDiscussion(null); setPractice(null); }}>
           <span class="ind">${I(t.icon)}</span>${t.label}
         </button>`)}
-    </nav>`;
+    </nav>
+    ${talk && course ? html`<${GeneralTalk} close=${() => setTalk(false)}
+        title=${chapter && chapterTitle ? chapterTitle : courseTitle || course}
+        where=${chapter ? courseTitle : ''} />` : null}`;
 }
 
 render(html`<${App} />`, document.getElementById('app'));
