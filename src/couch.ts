@@ -1,8 +1,9 @@
 /** The `lyceum` CouchDB database (build step 2's credentials).
  *
- * The app holds a database admin of `lyceum` and nothing else, injected by the
+ * The app holds a database admin of `lyceum`, injected by the
  * SealedSecret in `lyceum-config` as COUCHDB_URL / COUCHDB_USER /
- * COUCHDB_PASSWORD / COUCHDB_DB.
+ * COUCHDB_PASSWORD / COUCHDB_DB. The same user is a member of `obsidian` and
+ * `nova`, for the Note sheet's appends only (src/vault.ts).
  *
  * **Course content is read-only here and stays that way**: the vault is the
  * source of truth for chapters and sources, and `tools.lyceum_import` in

@@ -747,18 +747,24 @@ function Home({ onOpen, onOpenChapter, onPractise }) {
       Nothing is due, nothing expires.</p>`;
 }
 
-/* The demo's Note sheet. Its "Where it goes" chips were vault paths, and this
-   app can write only its own database, so the choice is the course on screen
-   or no course -- the one decision a note needs at the moment it is written. */
-function NoteSheet({ course, courseTitle, close, onSaved }) {
+/* The demo's Note sheet, as approved: the note is appended to the vault file
+   the chip names. The chips and their order are the demo's DESTS. */
+const DESTS = [
+  'work/platform/projects/platform atlas/notes.md',
+  'projects/sokrates/projects/nova/notes.md',
+  'learn.md',
+  'notes.md',
+];
+
+function NoteSheet({ close, onSaved }) {
+  const [dest, setDest] = useState(DESTS[0]);
   const [text, setText] = useState('');
-  const [here, setHere] = useState(Boolean(course));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const save = () => {
     setBusy(true); setErr('');
-    postJSON('/api/notes', { text, course: here ? course : null })
-      .then((d) => onSaved(d.note.courseTitle || 'My notes'),
+    postJSON('/api/notes', { text, dest })
+      .then(() => onSaved(dest),
             () => { setBusy(false); setErr('Could not save. Your text is still here.'); });
   };
   return html`
@@ -770,10 +776,11 @@ function NoteSheet({ course, courseTitle, close, onSaved }) {
         value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
       <div class="sectitle s3" style="margin:14px 0 2px">Where it goes</div>
       <div class="dests">
-        ${course ? html`<button class=${'chip' + (here ? ' on' : '')} onClick=${() => setHere(true)}>
-          ${here ? I('check') : null}${courseTitle || course}</button>` : null}
-        <button class=${'chip' + (!here ? ' on' : '')} onClick=${() => setHere(false)}>
-          ${!here ? I('check') : null}My notes</button>
+        ${DESTS.map((d) => html`
+          <button class=${'chip' + (dest === d ? ' on' : '')} key=${d} onClick=${() => setDest(d)}>
+            ${dest === d ? I('check') : null}${d.split('/').slice(-2).join('/')}
+          </button>`)}
+        <button class="chip">${I('add')}New topic</button>
       </div>
       ${err ? html`<p class="supporting" style="color:var(--error)">${err}</p>` : null}
       <div class="sheetact">
@@ -858,7 +865,7 @@ function App() {
     ${talk && course ? html`<${GeneralTalk} close=${() => setTalk(false)}
         title=${chapter && chapterTitle ? chapterTitle : courseTitle || course}
         where=${chapter ? courseTitle : ''} />` : null}
-    ${note ? html`<${NoteSheet} course=${course} courseTitle=${courseTitle} close=${() => setNote(false)}
+    ${note ? html`<${NoteSheet} close=${() => setNote(false)}
         onSaved=${(where) => { setNote(false); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
     ${snack ? html`<div class="snack">Saved to <code>${snack}</code></div>` : null}`;
 }
