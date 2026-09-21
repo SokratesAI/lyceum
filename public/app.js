@@ -395,15 +395,17 @@ function Discussion({ id, onTitle, placeholder = 'Ask Aristoteles…' }) {
   const { messages, waiting, discussion } = state.data;
   const about = discussion.about;
   return html`
-    ${about && about.kind === 'claim' ? html`<${AboutClaim} about=${about} />` : null}
-    <div class="chat">
-      ${messages.map((m, n) => html`
-        <div key=${n} class=${'bub ' + (m.sender === 'Edvard' ? 'e' : 'a')}>${m.text}</div>`)}
-      ${waiting ? html`<div class="bub a supporting">Aristoteles is thinking…</div>` : null}
-      <div ref=${end}></div>
+    <div class="chatscroll">
+      ${about && about.kind === 'claim' ? html`<${AboutClaim} about=${about} />` : null}
+      <div class="chat">
+        ${messages.map((m, n) => html`
+          <div key=${n} class=${'bub ' + (m.sender === 'Edvard' ? 'e' : 'a')}>${m.text}</div>`)}
+        ${waiting ? html`<div class="bub a supporting">Aristoteles is thinking…</div>` : null}
+        <div ref=${end}></div>
+      </div>
     </div>
     ${state.error ? html`<p class="supporting">${state.error}</p>` : null}
-    <form class="composer" onSubmit=${send}>
+    <form class="composer pinned" onSubmit=${send}>
       <input value=${draft} disabled=${sending} placeholder=${placeholder}
              onInput=${(e) => setDraft(e.target.value)} />
       <button class="iconbtn" type="submit" aria-label="Send">${I('send')}</button>
@@ -617,7 +619,7 @@ function Practice({ slug, onClose, onAsk }) {
         <div class="qtop"><div class="grow"></div>
           <button class="btn text" onClick=${onClose}>Close</button></div>
         <div class="qbody">
-          <div class="done">
+          <div class="pdone">
             <div class="big">${graded - missed.length}<span style="opacity:.4">/${graded}</span></div>
             <p class="supporting">${data.course.title}</p>
           </div>
@@ -965,7 +967,7 @@ function Bench({ slug, stageIn, setStageIn, refresh, openFile, openDisc }) {
     <div class="stagebar" onClick=${() => setSheet(true)}>
       <div class="n">${at + 1}</div>
       <div class="t">${stage.n}<div class="of">Stage ${at + 1} of 6${at === here ? '' : ' · you are on ' + (here + 1)}</div></div>
-      <div class="pips">
+      <div class="segs">
         ${DSRM.map((d, i) => html`<i key=${d.k} class=${i === at ? 'on' : i < here ? 'done' : ''}></i>`)}
       </div>
       ${I('unfold_more')}
@@ -1043,6 +1045,7 @@ function App() {
   const [stack, setStack] = useState([{ kind: 'home' }]);
   const [talk, setTalk] = useState(false);
   const [note, setNote] = useState(false);
+  const [dial, setDial] = useState(false);
   const [snack, setSnack] = useState(null);
   const [benchRefresh, setBenchRefresh] = useState(0);
   const [dx, setDx] = useState(0);
@@ -1070,6 +1073,7 @@ function App() {
   useEffect(() => {
     if (stack.length > 1 && !armed.current) { history.pushState({ lyceum: 1 }, ''); armed.current = true; }
   }, [stack.length]);
+  useEffect(() => { setDial(false); }, [stack]);
 
   const push = (v) => setStack((s) => [...s, v]);
   const back = () => {
@@ -1153,7 +1157,7 @@ function App() {
         ${depth > 0 ? html`<button class="iconbtn" onClick=${isTop ? back : null} aria-label="Back">${I('arrow_back')}</button>` : null}
         <h1>${p.title}</h1>
       </header>
-      <main class=${p.discuss ? 'stacked' : ''}>${p.body}</main>
+      <main class=${p.chat ? 'chatmain' : p.discuss ? 'stacked' : ''}>${p.body}</main>
     </div>`;
 
   const depth = stack.length - 1;
@@ -1166,16 +1170,23 @@ function App() {
   const course = stack.find((e) => e.kind === 'course');
   const talkTitle = top.kind === 'chapter' ? (top.chapterTitle || top.courseTitle || '') : onProject ? top.project.title : (top.title || top.slug || '');
 
+  // One small dial: on a page where Discuss applies it opens into Discuss + Note,
+  // elsewhere it opens the note sheet directly -- the approved demo's.
   const fab = cur.chat || cur.practice ? null : cur.discuss ? html`
+    ${dial ? html`<div class="dialscrim" onClick=${() => setDial(false)}></div>` : null}
     <div class="fabstack">
-      <button class="fab small" aria-label="Note" style="background:var(--primary-container);
-        color:var(--on-primary-container)" onClick=${() => setNote(true)}>${I('edit_note')}</button>
-      <button class="fab slidein" style="background:var(--tertiary);color:#fff"
-              onClick=${() => setTalk(true)}>${I('forum')}Discuss</button>
+      ${dial ? html`
+        <button class="minifab" onClick=${() => { setDial(false); setTalk(true); }}>
+          <span class="lbl">Discuss</span>
+          <span class="mf" style="background:var(--tertiary);color:#fff">${I('forum')}</span></button>
+        <button class="minifab" onClick=${() => { setDial(false); setNote(true); }}>
+          <span class="lbl">Note</span>
+          <span class="mf" style="background:var(--primary-container);color:var(--on-primary-container)">${I('edit_note')}</span></button>` : null}
+      <button class=${'fab dial' + (dial ? ' open' : '')} aria-label=${dial ? 'Close' : 'Discuss or note'}
+              onClick=${() => setDial(!dial)}>${I('add')}</button>
     </div>` : html`
     <div class="fabstack">
-      <button class="fab" style="background:var(--primary);color:#fff"
-              onClick=${() => setNote(true)}>${I('edit_note')}Note</button>
+      <button class="fab dial" aria-label="Note" onClick=${() => setNote(true)}>${I('edit_note')}</button>
     </div>`;
 
   return html`

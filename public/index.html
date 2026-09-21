@@ -414,8 +414,35 @@
   .fb p{margin:0 0 8px;font-size:15px;line-height:22px;}
   .fb .srcx{font-size:12.5px;line-height:18px;opacity:.85;}
   .fb .act{display:flex;justify-content:flex-end;margin-top:10px;}
-  .done{text-align:center;padding:20px 0 8px;}
-  .done .big{font:400 44px/1 Roboto,sans-serif;margin-bottom:6px;}
+  .pdone{text-align:center;padding:20px 0 8px;}
+  .pdone .big{font:400 44px/1 Roboto,sans-serif;margin-bottom:6px;}
+
+  /* ---------- stage progress: six segments ---------- */
+  .segs{display:flex;gap:3px;flex:0 0 auto;width:66px;}
+  .segs i{flex:1;height:4px;border-radius:2px;background:rgba(0,0,0,.14);display:block;}
+  .segs i.done{background:rgba(0,0,0,.45);}
+  .segs i.on{background:currentColor;}
+
+  /* ---------- one dial FAB that opens into the actions ---------- */
+  .fab.dial{width:56px;min-width:56px;height:56px;padding:0;justify-content:center;
+    border-radius:16px;background:var(--primary);color:#fff;}
+  .fab.dial .msym{transition:transform .2s cubic-bezier(.2,0,0,1);}
+  .fab.dial.open .msym{transform:rotate(45deg);}
+  .minifab{display:flex;align-items:center;gap:10px;background:none;border:0;padding:0 6px 0 0;
+    cursor:pointer;animation:slidein .2s cubic-bezier(.2,0,0,1) both;}
+  .minifab .lbl{background:var(--surface-container-highest);color:var(--on-surface);
+    font:500 13px/18px Roboto,sans-serif;padding:6px 10px;border-radius:8px;box-shadow:var(--el1);}
+  .minifab .mf{width:44px;height:44px;border-radius:14px;display:flex;align-items:center;
+    justify-content:center;box-shadow:var(--el2);}
+  .dialscrim{position:fixed;inset:0;z-index:14;background:rgba(0,0,0,.08);}
+
+  /* ---------- chat: messages scroll, composer pinned at the bottom ---------- */
+  main.chatmain{display:flex;flex-direction:column;overflow:hidden;
+    padding-bottom:calc(env(safe-area-inset-bottom) + 84px);}
+  .chatscroll{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;
+    padding-bottom:8px;}
+  .chatscroll > .chat{margin-top:auto;}
+  .composer.pinned{flex:0 0 auto;margin:0;padding:8px 0 4px;background:var(--surface);}
 
   /* ---------- shell additions (build step 4) ---------- */
   .card .chev{color:var(--on-surface-variant);font-size:24px;flex:0 0 auto;}
