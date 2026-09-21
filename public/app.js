@@ -119,17 +119,92 @@ function Course({ slug, onOpenChapter, onPractise }) {
       </div>`)}`;
 }
 
-/* The reading view proper -- GRADE marks in the right margin, tappable for the
-   source trace -- is build step 7, because it needs claim atoms that do not
-   exist yet. This renders the chapter body so the shell is walkable end to end. */
+/* The GRADE mark's class, and the word under it when the trace is open. The
+   four levels are the approved encoding: filled, lighter, hollow, dashed amber.
+   `contradicted` and `unverified` are claim *statuses* rather than grades and
+   carry no colour of their own, so they fall through to the hollow mark and say
+   what they are in words -- inventing a fifth dot for a state the design never
+   settled would be redesigning the UI, which the spec forbids. */
+const MARK_CLASS = { high: 'm-high', moderate: 'm-mod', low: 'm-low', ungrounded: 'm-un' };
+
+const TRACE_WORD = {
+  contradicted: 'The source says otherwise',
+  unverified: 'Never checked against a source',
+};
+
+/* One claim's source trace, opened by tapping its mark.
+   It answers the question the mark raises and nothing else: how solid is this,
+   and what is it standing on. The verbatim `quote` is the whole value of the
+   grounded case -- it is the sentence in the source that the claim was checked
+   against, so he can disagree with the check rather than take it on trust. */
+function Trace({ claim, sources }) {
+  const grounded = claim.status === 'grounded';
+  const cited = (claim.sourceIds || []).map((id) => sources[id]?.title || id);
+  return html`
+    <div class=${'trace' + (grounded ? '' : ' un')}>
+      <div class="lvl">${TRACE_WORD[claim.status] || GRADE_WORD[claim.grade] || claim.grade}</div>
+      ${claim.quote
+        ? html`<div>“${claim.quote}”</div>`
+        : html`<div>Nothing in this course's sources states this. It is the author's
+            own reasoning, and the course keeps it rather than dropping it so that
+            you can see it is untested.</div>`}
+      ${cited.length ? html`<div style="margin-top:6px"><b>Source:</b> ${cited.join(', ')}</div>` : null}
+    </div>`;
+}
+
+/* The reading view -- build step 7, the app's half.
+
+   A mark sits inline immediately after the paragraph its claim was drawn from,
+   the way a citation marker sits at the end of a sentence; the right-margin
+   gutter the demo started with is deliberately gone. The server decides which
+   paragraph each mark belongs to (`claims.ts`), because that is a measurement
+   against the chapter text rather than a rendering decision.
+
+   A claim the server could not place carries `paragraph: null` and is listed
+   under the chapter instead of being attached to a guess. That is eight of the
+   2,607 claims in the live database, and putting one of them under the wrong
+   paragraph would attribute a source to text that did not produce it. */
 function Chapter({ id }) {
   const { loading, error, data } = useJSON(`/api/chapters/${encodeURIComponent(id)}`);
+  const [open, setOpen] = useState(null);
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
+
+  const claims = data.claims || [];
+  const sources = data.sources || {};
+  const byParagraph = new Map();
+  const unplaced = [];
+  for (const c of claims) {
+    if (c.paragraph === null || c.paragraph === undefined) { unplaced.push(c); continue; }
+    if (!byParagraph.has(c.paragraph)) byParagraph.set(c.paragraph, []);
+    byParagraph.get(c.paragraph).push(c);
+  }
+  const toggle = (cid) => setOpen((was) => (was === cid ? null : cid));
+  const mark = (c) => html`<span key=${c.id} class=${'mark ' + (MARK_CLASS[c.grade] || 'm-low')}
+      role="button" tabIndex="0" title=${GRADE_WORD[c.grade] || c.grade}
+      onClick=${() => toggle(c.id)} />`;
+
   return html`
-    <article class="reading">${data.chapter.body.split(/\n{2,}/).map((p, n) => html`<p key=${n}>${p}</p>`)}</article>
-    <${NotBuiltYet} title="No claim marks yet" step="7"
-      what="GRADE marks in the right margin need claim atoms, which are not extracted yet." />`;
+    <article class="reading read">
+      ${data.chapter.body.split(/\n{2,}/).map((p, n) => {
+        const here = byParagraph.get(n) || [];
+        return html`<div key=${n}>
+          <p class="claim">${p}${here.map(mark)}</p>
+          ${here.filter((c) => c.id === open).map((c) => html`<${Trace} key=${c.id} claim=${c} sources=${sources} />`)}
+        </div>`;
+      })}
+    </article>
+    ${unplaced.length ? html`
+      <div class="sectitle">Also claimed in this chapter</div>
+      <div class="card">
+        <p class="supporting">${unplaced.length} claim${unplaced.length === 1 ? '' : 's'} could not be
+          matched to a single paragraph of this text, so ${unplaced.length === 1 ? 'it is' : 'they are'}
+          listed here rather than marked in the wrong place.</p>
+        ${unplaced.map((c) => html`<div key=${c.id} style="margin-top:10px">
+          <p style="margin:0 0 4px">${c.text}${mark(c)}</p>
+          ${c.id === open ? html`<${Trace} claim=${c} sources=${sources} />` : null}
+        </div>`)}
+      </div>` : null}`;
 }
 
 const postJSON = (url, body) =>

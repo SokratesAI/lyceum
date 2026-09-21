@@ -11,6 +11,7 @@ import { createApp } from "./app.js";
 import type { Couch, Doc } from "./couch.js";
 import { NoToken, visibleMessages, type Agora } from "./agora.js";
 import { briefing, contextBlock, parseMemories, parseRecalls, slug, stripMarkers } from "./memory.js";
+import { anchorClaim, paragraphsOf } from "./claims.js";
 
 const DOCS: Doc[] = [
   {
@@ -28,7 +29,9 @@ const DOCS: Doc[] = [
     courseId: "course:analytics",
     slug: "b-second",
     title: "Second",
-    body: "one\n\ntwo",
+    body:
+      "one is the paragraph this claim does not belong under, and nowhere else\n\n" +
+      "two is the paragraph this claim belongs under, and nowhere else",
     order: 1,
     sourceIds: ["source:analytics:paper"],
   },
@@ -40,6 +43,35 @@ const DOCS: Doc[] = [
     title: "First",
     body: "first body",
     order: 0,
+    sourceIds: [],
+  },
+  // Claims on `b-second`, whose body is two paragraphs: "one" and "two".
+  // Their text is deliberately longer than the 40-character floor in
+  // `claims.ts`, because a shorter fragment is refused rather than anchored.
+  {
+    _id: "claim:analytics:b-second:000",
+    type: "claim",
+    courseId: "course:analytics",
+    chapterId: "chapter:analytics:b-second",
+    order: 0,
+    text: "two is the paragraph this claim belongs under, and nowhere else",
+    grade: "high",
+    status: "grounded",
+    quote: "the sentence in the source",
+    checkedAgainst: "source:analytics:paper",
+    sourceIds: ["source:analytics:paper"],
+  },
+  {
+    _id: "claim:analytics:b-second:001",
+    type: "claim",
+    courseId: "course:analytics",
+    chapterId: "chapter:analytics:b-second",
+    order: 1,
+    text: "a claim the extractor paraphrased so far that no fragment of it survives",
+    grade: "ungrounded",
+    status: "ungrounded",
+    quote: null,
+    checkedAgainst: null,
     sourceIds: [],
   },
   {
@@ -649,5 +681,51 @@ describe("practice", () => {
     expect(withCards.body.courses[0].cardCount).toBe(3);
     const without = await request(createApp(makeStub([...DOCS]), makeAgora())).get("/api/courses");
     expect(without.body.courses[0].cardCount).toBe(0);
+  });
+});
+
+describe("claim marks in the reading view -- build step 7", () => {
+  it("anchors a claim to the one paragraph its text is in, and titles its source", async () => {
+    const res = await request(app).get("/api/chapters/chapter:analytics:b-second");
+    expect(res.status).toBe(200);
+    const placed = res.body.claims.find((c: any) => c.id === "claim:analytics:b-second:000");
+    // Paragraph 1, not 0: both paragraphs end in the same words, and picking
+    // the first match would put the mark under the wrong text.
+    expect(placed.paragraph).toBe(1);
+    expect(placed).toMatchObject({ grade: "high", status: "grounded", quote: "the sentence in the source" });
+    expect(res.body.sources["source:analytics:paper"].title).toBe("A paper");
+  });
+
+  it("returns paragraph null rather than a guess when nothing matches", async () => {
+    const res = await request(app).get("/api/chapters/chapter:analytics:b-second");
+    const unplaced = res.body.claims.find((c: any) => c.id === "claim:analytics:b-second:001");
+    expect(unplaced.paragraph).toBeNull();
+    expect(unplaced.grade).toBe("ungrounded");
+  });
+
+  it("carries no claims, and no sources, for a chapter that has none", async () => {
+    const res = await request(app).get("/api/chapters/chapter:analytics:a-first");
+    expect(res.body.claims).toEqual([]);
+    expect(res.body.sources).toEqual({});
+  });
+
+  it("refuses an ambiguous anchor instead of taking the first paragraph", () => {
+    const paragraphs = paragraphsOf("the very same long sentence appears twice in this chapter\n\nthe very same long sentence appears twice in this chapter");
+    expect(anchorClaim(paragraphs, { text: "the very same long sentence appears twice in this chapter" })).toBeNull();
+  });
+
+  it("matches across markdown emphasis and rewrapped whitespace", () => {
+    const paragraphs = paragraphsOf("Cohort analysis is a **behavioral**\nanalytics technique used to segment users into groups.");
+    expect(anchorClaim(paragraphs, { text: "Cohort analysis is a behavioral analytics technique used to segment users into groups." })).toBe(0);
+  });
+
+  it("refuses a fragment shorter than the floor, which would match by coincidence", () => {
+    expect(anchorClaim(paragraphsOf("a short line"), { text: "a short line" })).toBeNull();
+  });
+
+  it("falls back to one sentence of a claim that joins two", () => {
+    const paragraphs = paragraphsOf("An opening paragraph with nothing relevant in it whatsoever.\n\nDescriptive analytics is the most common and easiest form to implement.");
+    const text = "Something the extractor invented at the front. Descriptive analytics is the most common and easiest form to implement.";
+    expect(anchorClaim(paragraphs, { text })).toBe(1);
   });
 });
