@@ -369,6 +369,16 @@
   .statement{font-size:15px;line-height:22px;color:var(--on-surface-variant);
     margin:0 2px 14px;}
 
+  /* ---------- page stack: swipe right to go back ---------- */
+  .stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;touch-action:pan-y;}
+  .page{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--surface);}
+  .page main{flex:1 1 auto;min-height:0;}
+  .page.top{z-index:1;}
+  .page.under{z-index:0;}
+  .page.top.moving{box-shadow:-12px 0 28px rgba(0,0,0,.22);}
+  .page.under::after{content:"";position:absolute;inset:0;background:#000;z-index:13;
+    opacity:var(--dim,0);pointer-events:none;}
+
   /* ---------- fab stack ---------- */
   main.stacked{padding-bottom:calc(env(safe-area-inset-bottom) + 12rem);}
   .fabstack{position:fixed;right:16px;bottom:calc(env(safe-area-inset-bottom) + 96px);
