@@ -201,6 +201,46 @@ describe("the shell itself", () => {
     expect(res.text).toContain('<div id="app">');
   });
 
+  it("serves the service worker stamped with this build and never cached", async () => {
+    const res = await request(app).get("/sw.js");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("javascript");
+    expect(res.headers["cache-control"]).toBe("no-cache");
+    expect(res.text).not.toContain("__BUILD__");
+    expect(res.text).toMatch(/const BUILD = '[0-9a-f]{12}';/);
+  });
+
+  it("precaches only files that exist, since one 404 fails the worker's install", async () => {
+    const sw = (await request(app).get("/sw.js")).text;
+    const list = sw.match(/const SHELL_FILES = \[([^\]]*)\]/);
+    expect(list).not.toBeNull();
+    const files = [...list![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    expect(files.length).toBeGreaterThan(5);
+    for (const f of files) {
+      const res = await request(app).get(f);
+      expect(res.status, f).toBe(200);
+      expect(res.text ?? "", f).not.toContain(f === "/" ? "__never__" : '<div id="app">');
+    }
+  });
+
+  it("declares installable icons that are real PNGs of the size they claim", async () => {
+    const manifest = JSON.parse((await request(app).get("/manifest.webmanifest")).text);
+    const sizes = manifest.icons.map((i: { sizes: string }) => i.sizes);
+    expect(sizes).toContain("192x192");
+    expect(sizes).toContain("512x512");
+    expect(manifest.icons.some((i: { purpose: string }) => i.purpose === "maskable")).toBe(true);
+    for (const icon of manifest.icons) {
+      const res = await request(app).get(icon.src).buffer(true).parse((r, cb) => {
+        const chunks: Buffer[] = [];
+        r.on("data", (c: Buffer) => chunks.push(c));
+        r.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+      const png = res.body as Buffer;
+      expect(png.subarray(1, 4).toString(), icon.src).toBe("PNG");
+      expect(`${png.readUInt32BE(16)}x${png.readUInt32BE(20)}`, icon.src).toBe(icon.sizes);
+    }
+  });
+
   it("keeps an unknown API path a JSON 404, not the shell", async () => {
     const res = await request(app).get("/api/nothing-here");
     expect(res.status).toBe(404);
