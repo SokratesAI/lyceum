@@ -352,7 +352,7 @@ const postJSON = (url, body) =>
    reply is written by a model somewhere else and arrives whenever it arrives.
    Polling stops as soon as it lands, because `waiting` is false once the last
    message is his rather than Edvard's. */
-function Discussion({ id, onTitle }) {
+function Discussion({ id, onTitle, placeholder = 'Ask Aristoteles…' }) {
   const [state, setState] = useState({ loading: true });
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -399,7 +399,7 @@ function Discussion({ id, onTitle }) {
     </div>
     ${state.error ? html`<p class="supporting">${state.error}</p>` : null}
     <form class="composer" onSubmit=${send}>
-      <input value=${draft} disabled=${sending} placeholder="Ask Aristoteles…"
+      <input value=${draft} disabled=${sending} placeholder=${placeholder}
              onInput=${(e) => setDraft(e.target.value)} />
       <button class="iconbtn" type="submit" aria-label="Send">${I('send')}</button>
     </form>`;
@@ -894,7 +894,7 @@ function StageSheet({ open, here, close, pick }) {
 function runTool(project, stage, tool) {
   const title = `${tool.name} · ${project.title}`;
   const text = `${tool.name} — ${tool.gloss.toLowerCase()}. Run it against my workshop project "${project.title}", now at DSRM stage ${stageIx(stage.k) + 1}, ${stage.n.toLowerCase()}. The project's statement: ${project.line}`;
-  return postJSON('/api/discussions', { title: title.slice(0, 200) }).then((d) =>
+  return postJSON('/api/discussions', { title: title.slice(0, 200), workshop: { project: project.slug, stage: stage.k } }).then((d) =>
     postJSON(`/api/discussions/${encodeURIComponent(d.discussion.id)}/messages`, { text }).then(() => d.discussion.id));
 }
 function awaitReply(id) {
@@ -905,9 +905,24 @@ function awaitReply(id) {
   });
 }
 
+/* The demo's DiscussionView: a discussion opened on the bench, read and
+   continued in place. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dayMonth = (iso) => { if (!iso) return ''; const d = new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+const countLine = (d) => (d.messages === null ? '' : `${d.messages} messages · `);
+function StageDiscussion({ d, back }) {
+  return html`
+    <button class="back" onClick=${back} style="background:none;border:0;padding:4px 0 10px;
+      color:var(--primary);font:500 13px Roboto,sans-serif;cursor:pointer">‹ Back</button>
+    <p class="supporting" style="margin:0 0 10px">${countLine(d)}with Aristoteles · ${dayMonth(d.createdAt)}</p>
+    <${Discussion} id=${d.id} placeholder="Continue…" />`;
+}
+
 function Bench({ slug }) {
-  const { loading, error, data } = useJSON(`/api/workshop/${encodeURIComponent(slug)}`);
+  const [version, setVersion] = useState(0);
+  const { loading, error, data } = useJSON(`/api/workshop/${encodeURIComponent(slug)}${version ? `?v=${version}` : ''}`);
   const [open, setOpen] = useState(null);
+  const [disc, setDisc] = useState(null);
   const [tool, setTool] = useState(null);
   const [all, setAll] = useState(false);
   const [file, setFile] = useState(null);
@@ -925,6 +940,7 @@ function Bench({ slug }) {
   const stageData = theory.stages[at];
 
   if (file) return html`<${FileView} slug=${slug} file=${file} back=${() => setFile(null)} />`;
+  if (disc) return html`<${StageDiscussion} d=${disc} back=${() => { setDisc(null); setVersion(version + 1); }} />`;
 
   const ids = all ? TOOLS.map((t) => t.id) : STAGE_TOOLS[stage.k];
   const shown = ids.map((id) => TOOLS.find((t) => t.id === id));
@@ -933,7 +949,7 @@ function Bench({ slug }) {
   const run = () => {
     setBusy(true); setRunError(null);
     runTool(theory, stage, tool).then(awaitReply).then(
-      (reply) => { setBusy(false); setRan({ ...ran, [key]: reply }); },
+      (reply) => { setBusy(false); setRan({ ...ran, [key]: reply }); setVersion(version + 1); },
       (err) => { setBusy(false); setRunError(String(err.message || err)); });
   };
 
@@ -950,7 +966,19 @@ function Bench({ slug }) {
     <p class="statement">${theory.line}</p>
 
     <div class="sectitle s2">Discussions</div>
-    <p class="supporting" style="margin:0 4px 8px">None at this stage.</p>
+    ${stageData.discussions.length ? stageData.discussions.map((d) => html`
+      <div class="card tap" key=${d.id} onClick=${() => setDisc(d)}>
+        <div class="row">
+          <div class="avatar" style="background:var(--secondary-container);
+            color:var(--on-secondary-container)">${I('forum')}</div>
+          <div class="grow">
+            <h3 style="font-size:15px">${d.title}</h3>
+            <p class="supporting">${countLine(d)}${dayMonth(d.createdAt)}</p>
+          </div>
+          ${I('chevron_right', 'trail')}
+        </div>
+      </div>`)
+    : html`<p class="supporting" style="margin:0 4px 8px">None at this stage.</p>`}
     ${stageData.files.length ? html`
       <div class="sectitle">Files</div>
       <${FileList} files=${stageData.files} open=${setFile} />` : null}
