@@ -4,7 +4,7 @@
  * its chapters and sources, and one chapter's body. They return only what the
  * screen renders, so a course list does not ship six chapter bodies to a phone.
  */
-import { appendNote, createFile, FileExists, httpVault, type VaultStore } from "./vault.js";
+import { appendNote, createFile, dbFor, FileExists, httpVault, type VaultStore } from "./vault.js";
 import express, { type Router } from "express";
 import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
@@ -54,13 +54,31 @@ const tfLabel = (answer: unknown) => (String(answer).toLowerCase() === "true" ? 
 
 const MAX_TEXT = 8000;
 
-/** The approved demo's "Where it goes" chips, in its order. */
-export const NOTE_DESTS = [
-  "work/platform/projects/platform atlas/notes.md",
-  "projects/sokrates/projects/nova/notes.md",
-  "learn.md",
-  "notes.md",
-];
+/** Where a note lands when he is not inside a project or a course. */
+export const NOTE_INBOX = "projects/sokrates/projects/lyceum/inbox.md";
+
+/** Every file a note may go to, in the approved demo's order: each workshop
+ *  project's own notes.md, each course folder's notes.md (the folder root,
+ *  never raw/), then the Inbox and learn.md. Derived from the records on every
+ *  call, so a new project is a destination at once, and the phone only ever
+ *  picks one of these -- it never names a path the server has not listed.
+ *  Nothing under Nova's folders: nova/notes.md is Nova's instruction inbox,
+ *  and a cycle would carry out a note written there. */
+export async function noteDests(couch: Couch) {
+  const folder = (root: string) => `${root.replace(/\/+$/, "")}/notes.md`;
+  const projects = (await couch.allDocs("project:"))
+    .filter((p) => typeof p.root === "string" && p.root)
+    .map((p) => ({ kind: "project", slug: p.slug, label: p.title, path: folder(p.root) }));
+  const courses = (await couch.allDocs("course:"))
+    .filter((c) => typeof c.vaultRoot === "string" && c.vaultRoot)
+    .map((c) => ({ kind: "course", slug: c.slug, label: c.title, path: folder(c.vaultRoot) }));
+  return [
+    ...projects,
+    ...courses,
+    { kind: "inbox", label: "Inbox", path: NOTE_INBOX },
+    { kind: "learn", label: "Want to learn", path: "learn.md" },
+  ].filter((d) => dbFor(d.path) !== "nova");
+}
 const THREAD_LIMIT = 200;
 /** A saved tool output is a whole Aristoteles answer, which runs past a note's
  *  cap; this only stops a runaway body, CouchDB takes far more. */
@@ -553,17 +571,27 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
    *
    * It is appended to one of the vault files the demo's "Where it goes" chips
    * name, as a markdown bullet, so it is in his vault and not in this app. Only
-   * those files: the path comes from the phone and is checked against the list.
+   * those files: the path comes from the phone and is checked against
+   * noteDests, which is read off the records, not off anything the phone sent.
    */
+  /** The Note sheet's chips: see noteDests. */
+  router.get("/notes/dests", async (_req, res, next) => {
+    try {
+      res.json({ dests: await noteDests(couch) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.post("/notes", async (req, res, next) => {
     const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
     if (!text) return res.status(400).json({ error: "a note needs some text" });
     if (text.length > MAX_TEXT) return res.status(400).json({ error: "that note is too long" });
     const dest = req.body?.dest;
-    if (typeof dest !== "string" || !NOTE_DESTS.includes(dest)) {
-      return res.status(400).json({ error: "dest must be one of the note files" });
-    }
     try {
+      if (typeof dest !== "string" || !(await noteDests(couch)).some((d) => d.path === dest)) {
+        return res.status(400).json({ error: "dest must be one of the note files" });
+      }
       const { created } = await appendNote(vault, dest, text);
       res.status(201).json({ note: { dest, created } });
     } catch (err) {

@@ -846,30 +846,49 @@ describe("notes", () => {
     expect(v.docs["obsidian/learn.md"].size).toBe(9 + Buffer.byteLength("\n- retention is\n  a cohort question\n"));
   });
 
-  it("creates a missing file, and routes Nova's folder to Nova's database", async () => {
-    const v = memVault();
-    const app = createApp(makeStub(), makeAgora(), v.store);
-    await request(app).post("/api/notes").send({ text: "a", dest: "work/platform/projects/platform atlas/notes.md" });
-    expect(v.text("obsidian", "work/platform/projects/platform atlas/notes.md")).toBe("- a\n");
-    await request(app).post("/api/notes").send({ text: "b", dest: "projects/sokrates/projects/nova/notes.md" });
-    expect(v.text("nova", "projects/sokrates/projects/nova/notes.md")).toBe("- b\n");
-    expect(v.docs["obsidian/projects/sokrates/projects/nova/notes.md"]).toBeUndefined();
+  const ROOTED: Doc[] = [
+    ...DOCS.filter((d) => d._id !== "course:analytics"),
+    { _id: "course:analytics", type: "course", slug: "analytics", title: "Analytics", vaultRoot: "projects/sokrates/wiki/analytics/" },
+    { _id: "project:platform-axiology", type: "project", slug: "platform-axiology", title: "Platform Axiology", root: "work/platform/projects/platform axiology", files: {} },
+    { _id: "project:nova-trap", type: "project", slug: "nova-trap", title: "Trap", root: "projects/sokrates/projects/nova", files: {} },
+  ];
+
+  it("lists each project's and course's own notes.md, then the Inbox and learn.md, and never a Nova folder", async () => {
+    const res = await request(createApp(makeStub([...ROOTED]), makeAgora(), memVault().store)).get("/api/notes/dests");
+    expect(res.status).toBe(200);
+    expect(res.body.dests).toEqual([
+      { kind: "project", slug: "platform-axiology", label: "Platform Axiology", path: "work/platform/projects/platform axiology/notes.md" },
+      { kind: "course", slug: "analytics", label: "Analytics", path: "projects/sokrates/wiki/analytics/notes.md" },
+      { kind: "inbox", label: "Inbox", path: "projects/sokrates/projects/lyceum/inbox.md" },
+      { kind: "learn", label: "Want to learn", path: "learn.md" },
+    ]);
   });
 
-  it("refuses an empty note and any file that is not one of the demo's chips, and writes nothing", async () => {
+  it("creates a missing file at a listed destination", async () => {
     const v = memVault();
-    const app = createApp(makeStub(), makeAgora(), v.store);
-    expect((await request(app).post("/api/notes").send({ text: "   ", dest: "notes.md" })).status).toBe(400);
-    expect((await request(app).post("/api/notes").send({ text: "x", dest: "journal.md" })).status).toBe(400);
+    const app = createApp(makeStub([...ROOTED]), makeAgora(), v.store);
+    expect((await request(app).post("/api/notes").send({ text: "a", dest: "projects/sokrates/wiki/analytics/notes.md" })).status).toBe(201);
+    expect(v.text("obsidian", "projects/sokrates/wiki/analytics/notes.md")).toBe("- a\n");
+    expect((await request(app).post("/api/notes").send({ text: "b", dest: "projects/sokrates/projects/lyceum/inbox.md" })).status).toBe(201);
+    expect(v.text("obsidian", "projects/sokrates/projects/lyceum/inbox.md")).toBe("- b\n");
+  });
+
+  it("refuses an empty note, Nova's instruction inbox, raw/, and any path it did not list, and writes nothing", async () => {
+    const v = memVault();
+    const app = createApp(makeStub([...ROOTED]), makeAgora(), v.store);
+    expect((await request(app).post("/api/notes").send({ text: "   ", dest: "learn.md" })).status).toBe(400);
+    expect((await request(app).post("/api/notes").send({ text: "x", dest: "projects/sokrates/projects/nova/notes.md" })).status).toBe(400);
+    expect((await request(app).post("/api/notes").send({ text: "x", dest: "projects/sokrates/wiki/analytics/raw/notes.md" })).status).toBe(400);
+    expect((await request(app).post("/api/notes").send({ text: "x", dest: "notes.md" })).status).toBe(400);
     expect((await request(app).post("/api/notes").send({ text: "x" })).status).toBe(400);
     expect(v.docs).toEqual({});
   });
 
   it("will not append to a file whose last chunk is missing", async () => {
-    const v = memVault({ "obsidian/notes.md": { _id: "notes.md", _rev: "1-a", children: ["h:gone"], type: "plain" } });
+    const v = memVault({ "obsidian/learn.md": { _id: "learn.md", _rev: "1-a", children: ["h:gone"], type: "plain" } });
     const app = createApp(makeStub(), makeAgora(), v.store);
-    expect((await request(app).post("/api/notes").send({ text: "x", dest: "notes.md" })).status).toBe(502);
-    expect(v.docs["obsidian/notes.md"]._rev).toBe("1-a");
+    expect((await request(app).post("/api/notes").send({ text: "x", dest: "learn.md" })).status).toBe(502);
+    expect(v.docs["obsidian/learn.md"]._rev).toBe("1-a");
   });
 });
 

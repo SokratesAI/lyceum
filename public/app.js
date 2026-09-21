@@ -773,25 +773,49 @@ function Home({ onOpen, onOpenChapter, onPractise }) {
 }
 
 /* The demo's Note sheet, as approved: the note is appended to the vault file
-   the chip names. The chips and their order are the demo's DESTS. */
-const DESTS = [
-  'work/platform/projects/platform atlas/notes.md',
-  'projects/sokrates/projects/nova/notes.md',
-  'learn.md',
-  'notes.md',
-];
+   the chip names. The first chip is where he is -- the project or course he
+   has open -- then the Inbox, and Other opens every other destination. The
+   server lists the destinations (/api/notes/dests); `here` is only a key into
+   that list, never a path. */
+const destIcon = (d) => ({ project: 'handyman', course: 'school', inbox: 'inbox', learn: 'lightbulb' })[d.kind] || 'description';
 
-function NoteSheet({ close, onSaved }) {
-  const [dest, setDest] = useState(DESTS[0]);
+/** The project or course the stack is inside, nearest the top first: a file
+ *  or anything opened from a project belongs to that project, a chapter to
+ *  its course. Null anywhere else, which the sheet reads as the Inbox. */
+function noteHere(stack) {
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const e = stack[i];
+    if (e.kind === 'project' && e.project) return { kind: 'project', slug: e.project.slug };
+    if (e.kind === 'file') return { kind: 'project', slug: e.slug };
+    if (e.kind === 'course') return { kind: 'course', slug: e.slug };
+    if (e.kind === 'chapter' && e.id) return { kind: 'course', slug: String(e.id).split(':')[1] };
+  }
+  return null;
+}
+
+function NoteSheet({ close, onSaved, here }) {
+  const { data } = useJSON('/api/notes/dests', { cache: false });
+  const dests = data ? data.dests : [];
+  const inbox = dests.find((d) => d.kind === 'inbox');
+  const at = here && dests.find((d) => d.kind === here.kind && d.slug === here.slug);
+  const quick = [at, inbox].filter(Boolean);
+  const [picked, setPicked] = useState(null);
+  const dest = picked || quick[0] || null;
+  const [other, setOther] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const rest = dests.filter((d) => !quick.some((q) => q.path === d.path));
   const save = () => {
     setBusy(true); setErr('');
-    postJSON('/api/notes', { text, dest })
-      .then(() => onSaved(dest),
+    postJSON('/api/notes', { text, dest: dest.path })
+      .then(() => onSaved(dest.path),
             () => { setBusy(false); setErr('Could not save. Your text is still here.'); });
   };
+  const chip = (d) => html`
+    <button class=${'chip' + (dest && dest.path === d.path ? ' on' : '')} key=${d.path} onClick=${() => setPicked(d)}>
+      ${I(dest && dest.path === d.path ? 'check' : destIcon(d))}${d.label}
+    </button>`;
   return html`
     <div class="scrim" onClick=${close}></div>
     <div class="sheet">
@@ -801,16 +825,20 @@ function NoteSheet({ close, onSaved }) {
         value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
       <div class="sectitle s3" style="margin:14px 0 2px">Where it goes</div>
       <div class="dests">
-        ${DESTS.map((d) => html`
-          <button class=${'chip' + (dest === d ? ' on' : '')} key=${d} onClick=${() => setDest(d)}>
-            ${dest === d ? I('check') : null}${d.split('/').slice(-2).join('/')}
-          </button>`)}
-        <button class="chip">${I('add')}New topic</button>
+        ${quick.map(chip)}
+        ${dest && !quick.some((q) => q.path === dest.path) ? chip(dest) : null}
+        <button class="chip" onClick=${() => setOther(!other)}>
+          ${I(other ? 'expand_less' : 'more_horiz')}Other</button>
       </div>
+      ${other ? html`<div class="dests" style="margin-top:0">
+        ${rest.filter((d) => !dest || d.path !== dest.path).map((d) => html`
+          <button class="chip" key=${d.path} onClick=${() => { setPicked(d); setOther(false); }}>
+            ${I(destIcon(d))}${d.label}</button>`)}
+      </div>` : null}
       ${err ? html`<p class="supporting" style="color:var(--error)">${err}</p>` : null}
       <div class="sheetact">
         <button class="btn text" onClick=${close}>Cancel</button>
-        <button class="btn filled" disabled=${busy || !text.trim()} onClick=${save}>Save</button>
+        <button class="btn filled" disabled=${busy || !dest || !text.trim()} onClick=${save}>Save</button>
       </div>
     </div>`;
 }
@@ -1229,7 +1257,7 @@ function App() {
         title=${top.project.title}
         about=${{ kind: 'project', text: top.project.title, ...(benchStage ? { where: benchStage.n.toLowerCase() } : {}) }}
         workshop=${{ project: top.project.slug, stage: benchStage ? benchStage.k : top.project.stage }} />` : null}
-    ${note ? html`<${NoteSheet} close=${() => setNote(false)}
+    ${note ? html`<${NoteSheet} here=${noteHere(stack)} close=${() => setNote(false)}
         onSaved=${(where) => { setNote(false); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
     ${snack ? html`<div class="snack">Saved to <code>${snack}</code></div>` : null}`;
 }
