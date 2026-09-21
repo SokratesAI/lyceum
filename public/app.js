@@ -27,7 +27,7 @@ const store = {
 };
 const statusOf = (slug) => store.get('status', {})[slug] || 'active';
 const setStatusOf = (slug, s) => store.set('status', { ...store.get('status', {}), [slug]: s });
-const placeOf = (slug) => store.get('place', {})[slug] || null;   // { n, title, id, of }
+const placeOf = (slug) => store.get('place', {})[slug] || null;   // { n, title, id }
 const setPlaceOf = (slug, place) => store.set('place', { ...store.get('place', {}), [slug]: place });
 
 const TABS = [
