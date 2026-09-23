@@ -855,6 +855,13 @@ function noteHere(stack) {
   return null;
 }
 
+/* A note draft, kept per keystroke so closing the sheet cannot lose it. */
+const NOTE_DRAFT = 'lyceum.note.draft';
+function readDraft() { try { return localStorage.getItem(NOTE_DRAFT) || ''; } catch { return ''; } }
+function writeDraft(v) {
+  try { if (v) localStorage.setItem(NOTE_DRAFT, v); else localStorage.removeItem(NOTE_DRAFT); } catch { /* private mode */ }
+}
+
 function NoteSheet({ close, onSaved, here }) {
   const { data, error: destErr } = useJSON('/api/notes/dests', { cache: false });
   const dests = data ? data.dests : [];
@@ -864,14 +871,16 @@ function NoteSheet({ close, onSaved, here }) {
   const [picked, setPicked] = useState(null);
   const dest = picked || quick[0] || null;
   const [other, setOther] = useState(false);
-  const [text, setText] = useState('');
+  // The draft survives the sheet closing, however it closes -- back, the scrim,
+  // Cancel, or the phone killing the tab. It is cleared once the note is saved.
+  const [text, setText] = useState(() => readDraft());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const rest = dests.filter((d) => !quick.some((q) => q.path === d.path));
   const save = () => {
     setBusy(true); setErr('');
     postJSON('/api/notes', { text, dest: dest.path })
-      .then(() => onSaved(dest.path),
+      .then(() => { writeDraft(''); onSaved(dest.path); },
             () => { setBusy(false); setErr('Could not save. Your text is still here.'); });
   };
   const chip = (d) => html`
@@ -884,7 +893,7 @@ function NoteSheet({ close, onSaved, here }) {
       <div class="grab"></div>
       <h3>New note</h3>
       <textarea placeholder="Write it down now. Shape it later."
-        value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+        value=${text} onInput=${(e) => { setText(e.target.value); writeDraft(e.target.value); }}></textarea>
       <div class="sectitle s3" style="margin:14px 0 2px">Where it goes</div>
       <div class="dests">
         ${quick.map(chip)}
@@ -1219,11 +1228,36 @@ function App() {
 
   /* The phone's back button: one history entry stands in for "there is somewhere
      to go back to". Popping it pops one page; it is re-armed while the stack is deep. */
+  /* An overlay that can hold typed text -- Discuss, the note sheet, rename --
+     gets a history entry of its own, so back closes the overlay and leaves the
+     page where it is. Until this existed back did both at once and the text in
+     the sheet went with it (review F-C3). Every close goes through the history
+     entry, or closing by tapping the scrim would leave a dead back press. */
+  const overlayOpen = talk || note || rename !== null;
+  const overlayArmed = useRef(false);
+  const closeOverlays = () => { setTalk(false); setNote(false); setRename(null); };
+  const closeOverlay = () => { if (overlayArmed.current) history.back(); else closeOverlays(); };
+  useEffect(() => {
+    if (overlayOpen && !overlayArmed.current) { history.pushState({ lyceumOverlay: 1 }, ''); overlayArmed.current = true; }
+  }, [overlayOpen]);
   useEffect(() => {
     const onPop = () => {
+      if (overlayArmed.current) {
+        overlayArmed.current = false;
+        closeOverlays();
+        // A jump queued by reset() still wants doing: unwind the page entry
+        // under this one if there is one, otherwise just take the new stack.
+        const t = pendingTab.current;
+        if (t && armed.current) history.back();
+        else if (t) {
+          pendingTab.current = null; setDx(0); setAnim(false);
+          setStack(Array.isArray(t) ? t : [{ kind: t }]);
+        }
+        return;
+      }
       armed.current = false;
       const t = pendingTab.current; pendingTab.current = null;
-      setDx(0); setAnim(false); setTalk(false); setNote(false);
+      setDx(0); setAnim(false);
       if (t) setStack(Array.isArray(t) ? t : [{ kind: t }]);
       else setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
     };
@@ -1242,7 +1276,7 @@ function App() {
   };
   // Replace the whole stack (a tab, or a jump like Home -> a chapter), unwinding the history entry first.
   const reset = (s) => {
-    if (armed.current) { pendingTab.current = s; history.back(); } else setStack(s);
+    if (armed.current || overlayArmed.current) { pendingTab.current = s; history.back(); } else setStack(s);
   };
   const toTab = (t) => reset([{ kind: t }]);
   // A page learns its own title after it loads; it is kept on its entry so going back shows it at once.
@@ -1370,18 +1404,18 @@ function App() {
           <span class="ind">${I(t.icon)}</span>${t.label}
         </button>`)}
     </nav>
-    ${talk && !onProject && (top.kind === 'course' || top.kind === 'chapter') ? html`<${GeneralTalk} close=${() => setTalk(false)}
+    ${talk && !onProject && (top.kind === 'course' || top.kind === 'chapter') ? html`<${GeneralTalk} close=${closeOverlay}
         title=${talkTitle} where=${top.kind === 'chapter' ? (course && course.title) || top.courseTitle || '' : ''} />` : null}
     ${talk && onProject ? html`<${GeneralTalk}
-        close=${() => { setTalk(false); setBenchRefresh(benchRefresh + 1); }}
+        close=${() => { closeOverlay(); setBenchRefresh(benchRefresh + 1); }}
         title=${top.project.title}
         about=${{ kind: 'project', text: top.project.title, ...(benchStage ? { where: benchStage.n.toLowerCase() } : {}) }}
         workshop=${{ project: top.project.slug, stage: benchStage ? benchStage.k : top.project.stage }} />` : null}
-    ${rename ? html`<${RenameSheet} project=${rename.view.project} close=${() => setRename(null)}
+    ${rename ? html`<${RenameSheet} project=${rename.view.project} close=${closeOverlay}
         onRenamed=${(p) => { patchAt(rename.at, { project: { ...rename.view.project, ...p } }, rename.view);
-          setRename(null); setBenchRefresh(benchRefresh + 1); }} />` : null}
-    ${note ? html`<${NoteSheet} here=${noteHere(stack)} close=${() => setNote(false)}
-        onSaved=${(where) => { setNote(false); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
+          closeOverlay(); setBenchRefresh(benchRefresh + 1); }} />` : null}
+    ${note ? html`<${NoteSheet} here=${noteHere(stack)} close=${closeOverlay}
+        onSaved=${(where) => { closeOverlay(); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
     ${snack ? html`<div class="snack">Saved to <code>${snack}</code></div>` : null}`;
 }
 
