@@ -1091,6 +1091,46 @@ describe("workshop", () => {
     expect((await request(app).get("/api/workshop/nope")).status).toBe(404);
   });
 
+  /* Review item B15 (issue #282): renaming and moving a project used to be a
+     hand edit in CouchDB, which he cannot do from the phone. */
+  it("renames a project and moves its root", async () => {
+    const own = createApp(makeStub([...DOCS, project]), makeAgora(), store);
+    const res = await request(own).patch("/api/workshop/axiology")
+      .send({ title: "Goals & OKRs", root: "work/product-manager" });
+    expect(res.status).toBe(200);
+    expect(res.body.project).toMatchObject({ slug: "axiology", title: "Goals & OKRs", root: "work/product-manager" });
+    // The change is on the record, not only in the reply.
+    const page = await request(own).get("/api/workshop/axiology");
+    expect(page.body.project.title).toBe("Goals & OKRs");
+    expect(page.body.project.root).toBe("work/product-manager");
+    // Everything else about the project survives the rename.
+    expect(page.body.project.stage).toBe("demo");
+    expect(page.body.project.fileCount).toBe(5);
+  });
+
+  it("renames without being told a root, and moves without being told a name", async () => {
+    const own = createApp(makeStub([...DOCS, project]), makeAgora(), store);
+    expect((await request(own).patch("/api/workshop/axiology").send({ title: "Axiology" })).body.project)
+      .toMatchObject({ title: "Axiology", root: "work/platform/projects/platform axiology" });
+    expect((await request(own).patch("/api/workshop/axiology").send({ root: "work/elsewhere" })).body.project)
+      .toMatchObject({ title: "Axiology", root: "work/elsewhere" });
+  });
+
+  it("refuses a rename that would leave a project unnamed, unplaced or unchanged", async () => {
+    const own = createApp(makeStub([...DOCS, project]), makeAgora(), store);
+    for (const body of [{}, { title: "   " }, { title: 7 }, { root: "" }, { root: "/" },
+                        { root: "work/../../etc" }, { root: "work/./here" }, { title: "x".repeat(201) }]) {
+      const res = await request(own).patch("/api/workshop/axiology").send(body as any);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+    // Refusing left the record alone.
+    expect((await request(own).get("/api/workshop/axiology")).body.project.title).toBe("Platform Axiology");
+  });
+
+  it("404s a rename of a project that does not exist", async () => {
+    expect((await request(app).patch("/api/workshop/nope").send({ title: "x" })).status).toBe(404);
+  });
+
   it("lists a discussion opened at a stage under that stage, with its message count", async () => {
     const bench = createApp(makeStub([...DOCS, project]), makeAgora(), store);
     const made = await request(bench).post("/api/discussions")

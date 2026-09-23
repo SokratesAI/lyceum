@@ -352,9 +352,9 @@ function Chapter({ id, onTitle }) {
         onStarted=${(id) => setStarted((was) => ({ ...was, [asking.id]: { id, messageCount: 1 } }))} />` : null}`;
 }
 
-const postJSON = (url, body) =>
+const sendJSON = (method, url, body) =>
   fetch(url, {
-    method: 'POST',
+    method,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   }).then(async (r) => {
@@ -362,6 +362,8 @@ const postJSON = (url, body) =>
     if (!r.ok) throw new Error(data.error || `${r.status} from ${url}`);
     return data;
   });
+const postJSON = (url, body) => sendJSON('POST', url, body);
+const patchJSON = (url, body) => sendJSON('PATCH', url, body);
 
 /* One open discussion with Aristoteles -- build step 5.
    Agora holds the transcript, so this polls rather than storing messages: the
@@ -1027,6 +1029,47 @@ function StageDiscussion({ d }) {
     <${Discussion} id=${d.id} placeholder="Continue…" />`;
 }
 
+/* Rename a project from the phone -- review item B15 (issue #282). Same sheet
+   as the note and stage sheets, because it is the control he approved for
+   "one thing to decide, cancel or confirm". The folder is the vault path the
+   project's files are read from; changing it re-points the project, it does
+   not move the files. */
+function RenameSheet({ project, close, onRenamed }) {
+  // The workshop list carries no root -- only the project page does -- so read
+  // it, and leave the field empty until it arrives rather than guessing a path.
+  const { data } = useJSON(`/api/workshop/${encodeURIComponent(project.slug)}`);
+  const root0 = (data && data.project.root) || project.root || '';
+  const [title, setTitle] = useState(project.title || '');
+  const [root, setRoot] = useState('');
+  useEffect(() => { if (root0 && !root) setRoot(root0); }, [root0]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const changed = title.trim() !== (project.title || '') || root.trim() !== root0;
+  const save = () => {
+    setBusy(true); setErr('');
+    patchJSON(`/api/workshop/${encodeURIComponent(project.slug)}`, { title: title.trim(), root: root.trim() })
+      .then((d) => onRenamed(d.project),
+            (e) => { setBusy(false); setErr(String(e.message || e)); });
+  };
+  return html`
+    <div class="scrim" onClick=${close}></div>
+    <div class="sheet">
+      <div class="grab"></div>
+      <h3>Rename project</h3>
+      <textarea rows="1" placeholder="What is this project called?"
+        value=${title} onInput=${(e) => setTitle(e.target.value)}></textarea>
+      <div class="sectitle s3" style="margin:14px 0 2px">Folder in the vault</div>
+      <textarea rows="1" placeholder="work/workshop/..."
+        value=${root} onInput=${(e) => setRoot(e.target.value)}></textarea>
+      ${err ? html`<p class="supporting" style="color:var(--error)">${err}</p>` : null}
+      <div class="sheetact">
+        <button class="btn text" onClick=${close}>Cancel</button>
+        <button class="btn filled" disabled=${busy || !title.trim() || !root.trim() || !changed}
+                onClick=${save}>Rename</button>
+      </div>
+    </div>`;
+}
+
 function Bench({ slug, stageIn, setStageIn, refresh, openFile, openDisc }) {
   const [version, setVersion] = useState(0);
   useEffect(() => { if (refresh) setVersion((v) => v + 1); }, [refresh]);
@@ -1161,6 +1204,7 @@ function App() {
   }, []);
   const [talk, setTalk] = useState(false);
   const [note, setNote] = useState(false);
+  const [rename, setRename] = useState(null);
   const [dial, setDial] = useState(false);
   const [snack, setSnack] = useState(null);
   const [benchRefresh, setBenchRefresh] = useState(0);
@@ -1230,7 +1274,9 @@ function App() {
       case 'chapter': return { title: v.courseTitle || 'Reading', discuss: true, body: html`<${Chapter} id=${v.id}
           onTitle=${(t) => patchAt(depth, { chapterTitle: t }, v)} />` };
       case 'practice': return { title: 'Practice', practice: true, body: html`<${Practice} slug=${v.slug} onClose=${back} onAsk=${ask} />` };
-      case 'project': return { title: v.project.title, discuss: true, body: html`<${Bench} slug=${v.project.slug}
+      case 'project': return { title: v.project.title, discuss: true,
+          action: { icon: 'edit', label: 'Rename project', onClick: () => setRename({ at: depth, view: v }) },
+          body: html`<${Bench} slug=${v.project.slug}
           stageIn=${v.stage} setStageIn=${(i) => patchAt(depth, { stage: i }, v)} refresh=${benchRefresh}
           openFile=${(file) => push({ kind: 'file', slug: v.project.slug, file, project: v.project, stage: v.stage })}
           openDisc=${(d) => push({ kind: 'disc', d })} />` };
@@ -1272,6 +1318,8 @@ function App() {
       <header class=${'appbar' + (depth > 0 ? ' hasback' : '')}>
         ${depth > 0 ? html`<button class="iconbtn" onClick=${isTop ? back : null} aria-label="Back">${I('arrow_back')}</button>` : null}
         <h1>${p.title}</h1>
+        ${isTop && p.action ? html`<button class="iconbtn" aria-label=${p.action.label}
+            onClick=${p.action.onClick}>${I(p.action.icon)}</button>` : null}
       </header>
       <main class=${p.chat ? 'chatmain' : p.discuss ? 'stacked' : ''}>${p.body}</main>
     </div>`;
@@ -1329,6 +1377,9 @@ function App() {
         title=${top.project.title}
         about=${{ kind: 'project', text: top.project.title, ...(benchStage ? { where: benchStage.n.toLowerCase() } : {}) }}
         workshop=${{ project: top.project.slug, stage: benchStage ? benchStage.k : top.project.stage }} />` : null}
+    ${rename ? html`<${RenameSheet} project=${rename.view.project} close=${() => setRename(null)}
+        onRenamed=${(p) => { patchAt(rename.at, { project: { ...rename.view.project, ...p } }, rename.view);
+          setRename(null); setBenchRefresh(benchRefresh + 1); }} />` : null}
     ${note ? html`<${NoteSheet} here=${noteHere(stack)} close=${() => setNote(false)}
         onSaved=${(where) => { setNote(false); setSnack(where); setTimeout(() => setSnack(null), 4000); }} />` : null}
     ${snack ? html`<div class="snack">Saved to <code>${snack}</code></div>` : null}`;
