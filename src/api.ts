@@ -6,6 +6,7 @@
  */
 import { appendNote, createFile, dbFor, FileExists, httpVault, type VaultStore } from "./vault.js";
 import express, { type Router } from "express";
+import { randomUUID } from "node:crypto";
 import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
 import { briefing, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
@@ -48,6 +49,11 @@ const MAX_ANSWERS = 100;
  *  `seen` (a written answer, which nothing here grades) are recorded so the
  *  card moves out of the never-seen tier. */
 const RESULTS = ["correct", "missed", "skipped", "seen"];
+
+/** A client-supplied answer id goes straight into a document id, so it is
+ *  restricted to characters that cannot climb out of the `answer:<slug>:`
+ *  prefix or collide with a document of another type. */
+const ANSWER_ID = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /** The grader stores `true`/`false` as a lower-case string. */
 const tfLabel = (answer: unknown) => (String(answer).toLowerCase() === "true" ? "True" : "False");
@@ -344,13 +350,22 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
     }
   });
 
-  /** What happened in a session, so the next one can order itself.
+  /** What happened in a session: an append-only answer per card, then a rollup.
    *
-   * One document per card rather than one per session: the ordering above only
-   * ever asks "how did this card go last time", and a growing list of session
-   * documents would make that a scan. Counts are kept because they cost one
-   * field each and a card he has missed three times is worth knowing about
-   * later; nothing reads them yet, and nothing schedules anything.
+   * Two documents per answer, and the order matters. `answer:<slug>:<answerId>`
+   * is written first and never read-modify-written, so nothing can conflict
+   * with it and nothing can overwrite it -- that is the record of what he
+   * actually did. The `cardstate:` rollup after it is a read-modify-write and
+   * can be lost to a concurrent writer; it holds only what the ordering above
+   * asks ("how did this card go last time") plus two counts nothing schedules.
+   *
+   * `answerId` comes from the client so a retry is idempotent: the front end
+   * posts each card as it is graded and re-sends anything it could not get
+   * through, and without a stable id a dropped response would file the same
+   * answer twice. An answer already in the log skips the rollup too, so the
+   * one thing a retry can cost is a single `seen` increment on a counter that
+   * only breaks ties in the deck order. Losing that is invisible; a duplicated
+   * or missing log row would not be.
    */
   router.post("/practice/answers", async (req, res, next) => {
     try {
@@ -371,6 +386,25 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
         if (!card || card.type !== "card") {
           return res.status(404).json({ error: `no such card: ${cardId}` });
         }
+        const slug = cardId.split(":")[1] ?? "";
+        // No id means no claim that this is a re-send, so it gets a fresh one
+        // and is filed as its own answer -- the same contract the route had
+        // before ids existed.
+        const given = ANSWER_ID.test(a?.answerId ?? "") ? a.answerId : null;
+        const logId = `answer:${slug}:${given ?? randomUUID()}`;
+        if (given && (await couch.get(logId))) {
+          stored += 1;
+          continue;
+        }
+        await couch.put({
+          _id: logId,
+          type: "answer",
+          cardId,
+          courseId: card.courseId,
+          result,
+          at: now,
+        });
+
         const id = `cardstate:${cardId.slice("card:".length)}`;
         const prev = await couch.get(id);
         await couch.put({

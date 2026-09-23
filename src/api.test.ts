@@ -740,6 +740,50 @@ describe("practice", () => {
     ]);
   });
 
+  it("files each answer as its own document that nothing later rewrites", async () => {
+    const docs = [...DOCS, ...CARDS];
+    const app = createApp(makeStub(docs), makeAgora());
+    await request(app).post("/api/practice/answers").send({
+      answers: [{ cardId: "card:analytics:a-first:000", result: "missed", answerId: "a1" }],
+    });
+    // The rollup is a read-modify-write and can lose a race; the log is not.
+    await request(app).post("/api/practice/answers").send({
+      answers: [{ cardId: "card:analytics:a-first:000", result: "correct", answerId: "a2" }],
+    });
+    const log = docs.filter((d) => d._id.startsWith("answer:"));
+    expect(log.map((d) => d._id)).toEqual(["answer:analytics:a1", "answer:analytics:a2"]);
+    expect(log[0]).toMatchObject({ type: "answer", cardId: "card:analytics:a-first:000", result: "missed" });
+    // The first answer still says "missed" even though the rollup now says correct.
+    expect(docs.find((d) => d._id === "cardstate:analytics:a-first:000")).toMatchObject({ lastResult: "correct" });
+  });
+
+  it("does not file the same answer twice when the phone re-sends it", async () => {
+    const docs = [...DOCS, ...CARDS];
+    const app = createApp(makeStub(docs), makeAgora());
+    const body = {
+      answers: [{ cardId: "card:analytics:a-first:000", result: "missed", answerId: "same-one" }],
+    };
+    const first = await request(app).post("/api/practice/answers").send(body);
+    const again = await request(app).post("/api/practice/answers").send(body);
+    expect(first.body.stored).toBe(1);
+    expect(again.body.stored).toBe(1);
+    expect(docs.filter((d) => d._id.startsWith("answer:"))).toHaveLength(1);
+    // And the rollup is not double-counted by the re-send either.
+    expect(docs.find((d) => d._id === "cardstate:analytics:a-first:000")).toMatchObject({ seen: 1, missed: 1 });
+  });
+
+  it("refuses to let an answer id name a document of another type", async () => {
+    const docs = [...DOCS, ...CARDS];
+    const app = createApp(makeStub(docs), makeAgora());
+    await request(app).post("/api/practice/answers").send({
+      answers: [{ cardId: "card:analytics:a-first:000", result: "missed", answerId: "../course:analytics" }],
+    });
+    const log = docs.filter((d) => d._id.startsWith("answer:"));
+    expect(log).toHaveLength(1);
+    expect(log[0]._id).not.toContain("..");
+    expect(docs.find((d) => d._id === "course:analytics")).toMatchObject({ type: "course" });
+  });
+
   it("counts a second sighting rather than replacing the first", async () => {
     const docs = [...DOCS, ...CARDS];
     const app = createApp(makeStub(docs), makeAgora());
