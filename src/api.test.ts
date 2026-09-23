@@ -5,7 +5,7 @@
  * chapter -- because a test written against a shape the importer does not
  * produce would pass against nothing real.
  */
-import { appendNote, type VaultStore } from "./vault.js";
+import { appendNote, httpVault, VaultConflict, type VaultStore } from "./vault.js";
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "./app.js";
@@ -899,6 +899,91 @@ describe("notes", () => {
     expect(v.docs["obsidian/Work/Inbox.md"]).toBeUndefined();
     expect(v.docs["obsidian/work/inbox.md"].path).toBe("Work/Inbox.md");
     expect(v.text("obsidian", "work/inbox.md")).toBe("# In\n- a thought\n");
+  });
+
+  /* Issue #277, the data-loss half. An append is a read-modify-write: read the
+   * file document, add one chunk, put it back with the `_rev` we read. If
+   * Obsidian syncs the same file in between, CouchDB refuses with 409 -- and
+   * before this, that 409 became a 502 and the note he had typed was gone,
+   * while its chunk sat orphaned in the database. */
+  function racingVault(conflicts: number, seed: Record<string, Record<string, any>>) {
+    const v = memVault(seed);
+    let left = conflicts;
+    const inner = v.store.put;
+    const puts: string[] = [];
+    v.store.put = async (db, doc) => {
+      puts.push(String(doc._id));
+      if (!String(doc._id).startsWith("h:") && left > 0) {
+        left--;
+        // What Obsidian's own sync did while we were reading: his text grew,
+        // and the revision we hold is stale.
+        v.docs[`${db}/${doc._id}`] = {
+          ...v.docs[`${db}/${doc._id}`],
+          _rev: `9-his${left}`,
+          children: [...(v.docs[`${db}/${doc._id}`].children as string[]), "h:his"],
+        };
+        v.docs[`${db}/h:his`] = { _id: "h:his", data: "- something he wrote\n", type: "leaf" };
+        throw new VaultConflict("vault 409 writing " + doc._id);
+      }
+      return inner(db, doc);
+    };
+    return { ...v, puts };
+  }
+
+  const NOTE_FILE = {
+    "obsidian/learn.md": { _id: "learn.md", _rev: "1-a", children: ["h:old"], size: 5, ctime: 5, type: "plain" },
+    "obsidian/h:old": { _id: "h:old", data: "# In\n", type: "leaf" },
+  };
+
+  it("re-reads and retries when the file moved under it, keeping both his text and the note", async () => {
+    const v = racingVault(1, structuredClone(NOTE_FILE));
+    const app = createApp(makeStub(), makeAgora(), v.store);
+    expect((await request(app).post("/api/notes").send({ text: "mine", dest: "learn.md" })).status).toBe(201);
+    // The retry re-read, so the revision he wrote is still there and the note
+    // landed after it rather than over it.
+    expect(v.text("obsidian", "learn.md")).toBe("# In\n- something he wrote\n- mine\n");
+  });
+
+  it("gives up rather than looping forever, and says the file is in conflict", async () => {
+    const v = racingVault(99, structuredClone(NOTE_FILE));
+    const app = createApp(makeStub(), makeAgora(), v.store);
+    expect((await request(app).post("/api/notes").send({ text: "mine", dest: "learn.md" })).status).toBe(502);
+    // Four attempts at the file document, and no more.
+    expect(v.puts.filter((id) => !id.startsWith("h:")).length).toBe(4);
+  });
+
+  /* The two tests above drive an in-memory store, so they cannot see which
+   * HTTP status becomes a conflict. That decision lives in `httpVault.put`
+   * and is tested against it, with `fetch` stubbed -- otherwise "a chunk 409
+   * is not a conflict" is a claim nothing checks. */
+  describe("httpVault.put", () => {
+    function withFetch(status: number, run: () => Promise<unknown>) {
+      const real = globalThis.fetch;
+      const calls: RequestInit[] = [];
+      globalThis.fetch = (async (_url: any, init: RequestInit) => {
+        calls.push(init);
+        return { status, ok: status < 300, json: async () => ({}) } as any;
+      }) as any;
+      process.env.COUCHDB_URL = "http://couch.invalid";
+      return run().finally(() => { globalThis.fetch = real; }).then(
+        (v) => ({ calls, value: v, error: undefined as unknown }),
+        (error) => ({ calls, value: undefined, error }),
+      );
+    }
+
+    it("treats a 409 on a chunk as already written, and a 409 on a file as a conflict", async () => {
+      const chunk = await withFetch(409, () => httpVault.put("obsidian", { _id: "h:abc", data: "x" }));
+      expect(chunk.error).toBeUndefined();
+      const file = await withFetch(409, () => httpVault.put("obsidian", { _id: "learn.md", children: [] }));
+      expect(file.error).toBeInstanceOf(VaultConflict);
+    });
+
+    it("gives every call a deadline, so a database that stops answering cannot hang the request", async () => {
+      const put = await withFetch(201, () => httpVault.put("obsidian", { _id: "learn.md", children: [] }));
+      expect(put.calls[0].signal).toBeInstanceOf(AbortSignal);
+      const get = await withFetch(200, () => httpVault.get("obsidian", "learn.md"));
+      expect(get.calls[0].signal).toBeInstanceOf(AbortSignal);
+    });
   });
 
   it("will not append to a file whose last chunk is missing", async () => {

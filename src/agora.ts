@@ -15,6 +15,8 @@
  * like Agora rejected the message when in fact it carried no credential.
  */
 
+import { AGORA_TIMEOUT_MS, deadline } from "./http.js";
+
 export interface Message {
   sender: string;
   text: string;
@@ -97,11 +99,11 @@ export const APP_SENDER = "Lyceum";
 async function write(path: string, payload: unknown): Promise<any> {
   const token = process.env.AGORA_TOKEN ?? "";
   if (!token) throw new NoToken();
-  const res = await fetch(`${internal()}${path}`, {
+  const res = await fetch(`${internal()}${path}`, deadline(AGORA_TIMEOUT_MS, {
     method: "POST",
     headers: { "content-type": "application/json", "x-agora-token": token },
     body: JSON.stringify(payload),
-  });
+  }));
   const body = await res.json().catch(() => ({}));
   if (res.status !== 200 && res.status !== 201) {
     throw new Error(`Agora ${res.status} on ${path}`);
@@ -147,6 +149,7 @@ export const httpAgora: Agora = {
   async messages(conversationId: string, limit: number) {
     const res = await fetch(
       `${publicUrl()}/conversations/${encodeURIComponent(conversationId)}/messages?limit=${limit}`,
+      deadline(AGORA_TIMEOUT_MS),
     );
     if (!res.ok) throw new Error(`Agora ${res.status} reading the thread`);
     const body = (await res.json()) as { messages?: any[] };

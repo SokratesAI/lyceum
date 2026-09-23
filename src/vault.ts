@@ -12,6 +12,7 @@
  * `obsidian` -- the rule vault_tool's `db_for` holds, copied here on purpose.
  */
 import { createHash } from "node:crypto";
+import { DB_TIMEOUT_MS, deadline } from "./http.js";
 
 export interface VaultStore {
   get(db: string, id: string): Promise<Record<string, any> | null>;
@@ -36,8 +37,35 @@ export function asBullet(text: string): string {
   return ["- " + first, ...rest.map((l) => (l ? "  " + l : ""))].join("\n") + "\n";
 }
 
+/** CouchDB refused a write because the document moved under us. */
+export class VaultConflict extends Error {}
+
+/** How many times a read-modify-write is retried before it gives up. Obsidian
+ *  writing the same file at the same moment is the ordinary cause and it
+ *  clears on the next read; four attempts is a lost race, not a busy file. */
+const CONFLICT_ATTEMPTS = 4;
+
+/** Run a read-modify-write again from the top when CouchDB says the document
+ *  moved (issue #277). This is the whole point: a retry must re-read, because
+ *  the revision it lost to is his text and the note has to land after it.
+ *  Retrying the `put` alone with a fresh `_rev` would write our stale
+ *  `children` list over whatever he just saved. */
+async function onConflictRetry<T>(op: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await op();
+    } catch (err) {
+      if (!(err instanceof VaultConflict) || attempt >= CONFLICT_ATTEMPTS) throw err;
+    }
+  }
+}
+
 /** Append `text` to the file at `path`, creating the file if it is missing. */
 export async function appendNote(store: VaultStore, path: string, text: string, now = Date.now()): Promise<{ created: boolean }> {
+  return onConflictRetry(() => appendOnce(store, path, text, now));
+}
+
+async function appendOnce(store: VaultStore, path: string, text: string, now: number): Promise<{ created: boolean }> {
   const db = dbFor(path);
   // Keyed lowercase, as createFile does: LiveSync ids carry no capitals, so a
   // mixed-case id is a second document Obsidian never shows.
@@ -81,6 +109,10 @@ export async function appendNote(store: VaultStore, path: string, text: string, 
  *  in `path` (measured: 910 documents under work/, no id with a capital, 393
  *  paths with one), so the id is lowercased and `path` is written as given. */
 export async function createFile(store: VaultStore, path: string, text: string, now = Date.now()): Promise<void> {
+  return onConflictRetry(() => createOnce(store, path, text, now));
+}
+
+async function createOnce(store: VaultStore, path: string, text: string, now: number): Promise<void> {
   const db = dbFor(path);
   const key = path.toLowerCase();
   const doc = await store.get(db, key);
@@ -112,19 +144,22 @@ function auth(): string {
 export const httpVault: VaultStore = {
   async get(db, id) {
     const url = (process.env.COUCHDB_URL ?? "").replace(/\/+$/, "");
-    const res = await fetch(`${url}/${db}/${encodeURIComponent(id)}`, { headers: { Authorization: auth() } });
+    const res = await fetch(`${url}/${db}/${encodeURIComponent(id)}`, deadline(DB_TIMEOUT_MS, { headers: { Authorization: auth() } }));
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`vault ${res.status} reading ${id}`);
     return (await res.json()) as Record<string, any>;
   },
   async put(db, doc) {
     const url = (process.env.COUCHDB_URL ?? "").replace(/\/+$/, "");
-    const res = await fetch(`${url}/${db}/${encodeURIComponent(doc._id)}`, {
+    const res = await fetch(`${url}/${db}/${encodeURIComponent(doc._id)}`, deadline(DB_TIMEOUT_MS, {
       method: "PUT",
       headers: { Authorization: auth(), "content-type": "application/json" },
       body: JSON.stringify(doc),
-    });
+    }));
+    // A chunk id is a hash of its own text, so a conflicting chunk already
+    // holds exactly this content and there is nothing to retry.
     if (res.status === 409 && String(doc._id).startsWith("h:")) return;
+    if (res.status === 409) throw new VaultConflict(`vault 409 writing ${doc._id}`);
     if (!res.ok) throw new Error(`vault ${res.status} writing ${doc._id}`);
   },
 };
