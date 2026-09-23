@@ -71,6 +71,47 @@ const check = (name, ok, saw) => {
   const late = await text(cold);
   check('fresh_answer_still_lands', late.includes('Thermodynamics'), late.slice(0, 80));
 
+  /* The cache shares one origin quota with his enrolment and where-you-left-off,
+     and nothing in it ever expires. Fill the quota to the byte with cache keys,
+     let the app boot and make one cache write against a full store, and his own
+     settings must still be writable afterwards. A cache that cannot give way
+     starves them silently, because the app's `store.set` swallows the
+     QuotaExceededError -- he would pause a course and find it enrolled again.
+     The fill steps down through three sizes because stopping at the first throw
+     leaves most of a block free, which is enough room for a small setting and
+     would make this check pass against the broken code too. */
+  const starve = await ctx.newPage();
+  await starve.route('**/*', serve(0));
+  await starve.goto('https://lyceum.test/');
+  await starve.waitForSelector('nav.navbar', { timeout: 15000 });
+  const filled = await starve.evaluate(() => {
+    let n = 0, full = false;
+    for (const size of [65536, 1024, 32, 1]) {
+      const blob = 'x'.repeat(size);
+      full = false;
+      try { for (let i = 0; i < 60000; i++, n++) localStorage.setItem('lyceum.json/filler/' + n, blob); }
+      catch { full = true; }   // this size no longer fits; step down
+    }
+    return { n, full };
+  });
+  check('store_really_is_full', filled.full === true, `${filled.n} filler keys, last write threw: ${filled.full}`);
+
+  /* The app has to attempt a cache write it has not made before: re-writing a key
+     that is already there at the same size costs no new bytes and cannot throw,
+     so a reload of a page it has already cached proves nothing. Opening Workshop
+     is a URL this session has never stored. */
+  await starve.reload();
+  await starve.waitForSelector('nav.navbar', { timeout: 15000 });
+  await starve.click('text=Workshop');
+  await starve.waitForTimeout(1500);
+  const setting = await starve.evaluate(() => {
+    try { localStorage.setItem('lyceum.status', JSON.stringify({ x: 'paused' })); }
+    catch (e) { return 'threw ' + e.name; }
+    return JSON.parse(localStorage.getItem('lyceum.status')).x;
+  });
+  check('his_settings_still_writable_when_cache_is_full', setting === 'paused', `setting -> ${setting}`);
+  await starve.close();
+
   check('no_page_errors', errs.length === 0, JSON.stringify(errs.slice(0, 3)));
   await b.close();
   if (fails.length) { console.log('FAILED: ' + fails.join(', ')); process.exit(1); }
