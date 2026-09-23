@@ -43,10 +43,25 @@ const getJSON = (url) =>
     return r.json();
   });
 
-/* The last answer for every URL this session has read, so going back to a page
-   draws it at once from here and swaps in the fresh answer when it lands,
-   instead of blanking to Loading on every visit (issue #267). */
-const lastJSON = new Map();
+/* The last answer for every URL, kept across launches, so opening a page you
+   have seen before draws it at once and swaps in the fresh answer when it
+   lands, instead of blanking to Loading (issue #267). This was an in-memory
+   Map, which emptied on every cold start -- and on a phone most starts are
+   cold, because the app is launched from the home screen rather than left
+   open, so the Loading it was written to remove came back on every launch.
+   `cache: false` callers (the chat, the practice deck) still store nothing,
+   so a kept answer can never hide a reply the chat is waiting for. A write
+   that does not fit the browser's storage quota is dropped by `store.set`,
+   which costs a redraw and nothing else. */
+const memo = new Map();
+const lastJSON = {
+  has: (url) => memo.has(url) || store.get('json' + url) !== undefined,
+  get: (url) => {
+    if (!memo.has(url)) memo.set(url, store.get('json' + url));
+    return memo.get(url);
+  },
+  set: (url, data) => { memo.set(url, data); store.set('json' + url, data); },
+};
 
 function useJSON(url, { cache = true } = {}) {
   const [state, setState] = useState(() => (cache && lastJSON.has(url) ? { data: lastJSON.get(url) } : { loading: true }));
