@@ -50,9 +50,22 @@ const getJSON = (url) =>
    cold, because the app is launched from the home screen rather than left
    open, so the Loading it was written to remove came back on every launch.
    `cache: false` callers (the chat, the practice deck) still store nothing,
-   so a kept answer can never hide a reply the chat is waiting for. A write
-   that does not fit the browser's storage quota is dropped by `store.set`,
-   which costs a redraw and nothing else. */
+   so a kept answer can never hide a reply the chat is waiting for.
+
+   This cache has to give way to his own data rather than the other way round,
+   which is why it does not go through `store.set`. Enrolment and where-you-left-off
+   share one origin quota with it, chapter bodies are the biggest thing the app
+   reads, and nothing here ever expires -- so a full cache would make every later
+   `setStatusOf` throw, and `store.set` swallows that silently: he would pause a
+   course, relaunch, and find it enrolled again. A cache write that does not fit
+   therefore empties the whole cache and gives up on that entry, so this can cost
+   a redraw and never a setting. */
+const JSON_PREFIX = 'lyceum.json';
+const forgetStoredJSON = () => {
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith(JSON_PREFIX)) localStorage.removeItem(k);
+  } catch { /* private mode */ }
+};
 const memo = new Map();
 const lastJSON = {
   has: (url) => memo.has(url) || store.get('json' + url) !== undefined,
@@ -60,7 +73,11 @@ const lastJSON = {
     if (!memo.has(url)) memo.set(url, store.get('json' + url));
     return memo.get(url);
   },
-  set: (url, data) => { memo.set(url, data); store.set('json' + url, data); },
+  set: (url, data) => {
+    memo.set(url, data);
+    try { localStorage.setItem(JSON_PREFIX + url, JSON.stringify(data)); }
+    catch { forgetStoredJSON(); }
+  },
 };
 
 function useJSON(url, { cache = true } = {}) {
