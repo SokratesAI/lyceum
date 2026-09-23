@@ -442,6 +442,28 @@
   .chatscroll{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;
     padding-bottom:8px;}
   .chatscroll > .chat{margin-top:auto;}
+  /* ---------- per-claim drawer -- ported verbatim from the approved demo ---------- */
+  .drawer{position:fixed;left:0;right:0;bottom:0;z-index:46;max-height:78vh;display:flex;
+    flex-direction:column;background:var(--surface-container-low);border-radius:28px 28px 0 0;
+    padding:12px 16px calc(env(safe-area-inset-bottom) + 12px);box-shadow:var(--el3);
+    animation:drawerin .28s cubic-bezier(.2,0,0,1) both;}
+  .drawer.out{animation:drawerout .22s cubic-bezier(.4,0,1,1) both;}
+  .drawer .grab{width:32px;height:4px;border-radius:2px;background:var(--outline-variant);
+    margin:0 auto 10px;cursor:pointer;}
+  .drawerchat{flex:1 1 auto;min-height:24px;overflow-y:auto;padding-bottom:6px;}
+  .drawer .composer{margin-top:6px;}
+  .drawer .growbox{background:var(--surface-container-highest);}
+  .scrim.drawerscrim{animation:fadein .2s both;}
+  .scrim.drawerscrim.out{animation:fadeout .2s both;}
+  @keyframes drawerin{from{transform:translateY(100%);}to{transform:none;}}
+  @keyframes drawerout{from{transform:none;}to{transform:translateY(100%);}}
+  @keyframes fadein{from{opacity:0;}to{opacity:1;}}
+  @keyframes fadeout{from{opacity:1;}to{opacity:0;}}
+  .talked{display:inline-flex;align-items:center;gap:2px;vertical-align:1px;margin-left:6px;
+    padding:0 6px;height:20px;border-radius:10px;background:var(--secondary-container);
+    color:var(--on-secondary-container);font:500 12px/20px Roboto,sans-serif;cursor:pointer;}
+  .talked .msym{font-size:14px;}
+
   .composer.pinned{flex:0 0 auto;margin:0;padding:8px 0 4px;background:var(--surface);}
 
   /* ---------- composer: growing textarea, and nothing riding up on the keyboard ---------- */

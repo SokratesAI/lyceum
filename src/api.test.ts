@@ -1236,3 +1236,73 @@ describe("workshop", () => {
     expect(res.body.project.stages[0].discussions[0].messages).toBeNull();
   });
 });
+
+/** Issue #270: a claim's conversation is saved against the claim, so "Ask
+ * about this" reopens it and the mark carries a badge.
+ *
+ * The failure this guards is not a crash -- it is a second thread. Before
+ * this, every tap of "Ask about this" on the same claim created another
+ * conversation, and nothing on the page said one already existed, so the
+ * only way to find yesterday's answer was to go looking in the Aristoteles
+ * tab for a thread titled with the first 80 characters of the claim. */
+describe("a claim keeps its own conversation", () => {
+  const CLAIM = "claim:analytics:b-second:000";
+
+  it("stores the claim id it was opened from, and only for a claim", async () => {
+    const docs = [...DOCS];
+    const chat = createApp(makeStub(docs), makeAgora());
+    const made = await request(chat)
+      .post("/api/discussions")
+      .send({ title: "two is the paragraph", about: { kind: "claim", text: "two is the paragraph this claim belongs under", claimId: CLAIM } });
+    expect(made.status).toBe(201);
+    expect(made.body.discussion.about.claimId).toBe(CLAIM);
+
+    // A chapter thread carries no claim id even when one is posted: it is not
+    // a claim, so nothing should ever find it by claim.
+    const chapter = await request(chat)
+      .post("/api/discussions")
+      .send({ title: "Second", about: { kind: "chapter", text: "Second", claimId: CLAIM } });
+    expect(chapter.status).toBe(201);
+    expect(chapter.body.discussion.about.claimId).toBeUndefined();
+  });
+
+  it("hands the chapter the thread and its message count, and null for a claim with none", async () => {
+    const docs = [...DOCS];
+    const chat = createApp(makeStub(docs), makeAgora());
+    const made = await request(chat)
+      .post("/api/discussions")
+      .send({ title: "two is the paragraph", about: { kind: "claim", text: "two is the paragraph this claim belongs under", claimId: CLAIM } });
+    // Reading the thread is what settles the count -- Agora holds the
+    // transcript and the chapter route never asks it.
+    await request(chat).get(`/api/discussions/${made.body.discussion.id}/messages`);
+
+    const res = await request(chat).get("/api/chapters/chapter:analytics:b-second");
+    expect(res.status).toBe(200);
+    const talked = res.body.claims.find((c: any) => c.id === CLAIM);
+    expect(talked.discussion).toEqual({ id: made.body.discussion.id, messageCount: 2 });
+    // Every other claim in the same chapter is untouched. Without this, a
+    // badge on all of them would read exactly like a badge on the right one.
+    for (const c of res.body.claims) {
+      if (c.id !== CLAIM) expect(c.discussion).toBeNull();
+    }
+  });
+
+  it("does not write the count back when it has not moved", async () => {
+    const docs = [...DOCS];
+    const puts: string[] = [];
+    const base = makeStub(docs);
+    const counting = { ...base, async put(doc: Doc) { puts.push(doc._id); return base.put(doc); } };
+    const chat = createApp(counting, makeAgora());
+    const made = await request(chat)
+      .post("/api/discussions")
+      .send({ title: "two is the paragraph", about: { kind: "claim", text: "two is the paragraph this claim belongs under", claimId: CLAIM } });
+    const id = made.body.discussion.id;
+    await request(chat).get(`/api/discussions/${id}/messages`);
+    const afterFirst = puts.filter((p) => p === id).length;
+    await request(chat).get(`/api/discussions/${id}/messages`);
+    await request(chat).get(`/api/discussions/${id}/messages`);
+    // The thread is polled every 3 seconds while a reply is coming. A put per
+    // poll would be a write loop for a number that did not change.
+    expect(puts.filter((p) => p === id).length).toBe(afterFirst);
+  });
+});

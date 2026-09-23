@@ -229,7 +229,8 @@ function Trace({ claim, sources, onAsk }) {
             you can see it is untested.</div>`}
       ${cited.length ? html`<div style="margin-top:6px"><b>Source:</b> ${cited.join(', ')}</div>` : null}
       ${onAsk ? html`<div style="display:flex;justify-content:flex-end;margin-top:10px">
-        <button class="btn tonal sm" onClick=${() => onAsk(claim)}>${I('forum')}Ask about this</button>
+        <button class="btn tonal sm" onClick=${() => onAsk(claim)}>${I('forum')}${
+          claim.discussion ? 'Open conversation' : 'Ask about this'}</button>
       </div>` : null}
     </div>`;
 }
@@ -295,10 +296,17 @@ function Chapter({ id, onTitle }) {
   const { loading, error, data } = useJSON(`/api/chapters/${encodeURIComponent(id)}`);
   const [open, setOpen] = useState(null);
   const [asking, setAsking] = useState(null);
+  // A thread started in the drawer this session is not in `data` -- that was
+  // fetched before it existed -- so the badge it earns is held here until the
+  // chapter is loaded again. Without it, "claims with one show a badge" is
+  // true only after a reload, which from the page reads as the send having
+  // been dropped. It sits with the other hooks and above the early returns:
+  // a hook called after `if (loading) return` runs on some renders and not
+  // others, which is the one way to corrupt every hook after it.
+  const [started, setStarted] = useState({});
   useEffect(() => { if (data && onTitle) onTitle(data.chapter.title); }, [data]);
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
-  if (asking) return html`<${ClaimTalk} claim=${asking} where=${data.chapter.title} back=${() => setAsking(null)} />`;
 
   const claims = data.claims || [];
   const sources = data.sources || {};
@@ -310,9 +318,9 @@ function Chapter({ id, onTitle }) {
     byParagraph.get(c.paragraph).push(c);
   }
   const toggle = (cid) => setOpen((was) => (was === cid ? null : cid));
-  const mark = (c) => html`<span key=${c.id} class=${'mark ' + (MARK_CLASS[c.grade] || 'm-low')}
-      role="button" tabIndex="0" title=${GRADE_WORD[c.grade] || c.grade}
-      onClick=${() => toggle(c.id)} />`;
+  const withTalk = (c) => (c.discussion || started[c.id] ? { ...c, discussion: c.discussion || started[c.id] } : c);
+  const mark = (c) => html`<${ClaimMark} key=${c.id} claim=${withTalk(c)}
+      onToggle=${() => toggle(c.id)} onOpen=${() => setAsking(withTalk(c))} />`;
 
   return html`
     <article class="reading read">
@@ -324,7 +332,7 @@ function Chapter({ id, onTitle }) {
         const here = byParagraph.get(n) || [];
         return html`<div key=${n}>
           ${block(parseBlock(p), here.map(mark), sources)}
-          ${here.filter((c) => c.id === open).map((c) => html`<${Trace} key=${c.id} claim=${c} sources=${sources} onAsk=${setAsking} />`)}
+          ${here.filter((c) => c.id === open).map((c) => html`<${Trace} key=${c.id} claim=${withTalk(c)} sources=${sources} onAsk=${setAsking} />`)}
         </div>`;
       })}
     </article>
@@ -336,9 +344,12 @@ function Chapter({ id, onTitle }) {
           listed here rather than marked in the wrong place.</p>
         ${unplaced.map((c) => html`<div key=${c.id} style="margin-top:10px">
           <p style="margin:0 0 4px">${c.text}${mark(c)}</p>
-          ${c.id === open ? html`<${Trace} claim=${c} sources=${sources} onAsk=${setAsking} />` : null}
+          ${c.id === open ? html`<${Trace} claim=${withTalk(c)} sources=${sources} onAsk=${setAsking} />` : null}
         </div>`)}
-      </div>` : null}`;
+      </div>` : null}
+    ${asking ? html`<${ClaimDrawer} claim=${asking} where=${data.chapter.title}
+        close=${() => setAsking(null)}
+        onStarted=${(id) => setStarted((was) => ({ ...was, [asking.id]: { id, messageCount: 1 } }))} />` : null}`;
 }
 
 const postJSON = (url, body) =>
@@ -447,7 +458,7 @@ const AboutClaim = ({ about }) => html`
    Agora conversation on open would leave an empty thread in his list every
    time he looked and closed. The first send creates it, carrying `about`, and
    from then on it is an ordinary Discussion. */
-function NewThread({ title, about, workshop }) {
+function NewThread({ title, about, workshop, onStarted }) {
   const [id, setId] = useState(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -460,7 +471,7 @@ function NewThread({ title, about, workshop }) {
     setSending(true);
     postJSON('/api/discussions', { title: title.slice(0, 200), about, ...(workshop ? { workshop } : {}) })
       .then((d) => postJSON(`/api/discussions/${encodeURIComponent(d.discussion.id)}/messages`, { text })
-        .then(() => setId(d.discussion.id)))
+        .then(() => { setId(d.discussion.id); onStarted && onStarted(d.discussion.id); }))
       .catch((err) => { setSending(false); setError(String(err.message || err)); });
   };
   return html`
@@ -478,12 +489,42 @@ function NewThread({ title, about, workshop }) {
     </form>`;
 }
 
-/* Asking about one claim, inside the reading view -- the demo's ClaimTalk. */
-function ClaimTalk({ claim, where, back }) {
+/* A claim's mark, and the badge beside it when that claim has been talked
+   about. The badge is the demo's `.talked` chip and it is a second way into
+   the same drawer: the mark opens the source trace, the badge skips it and
+   goes straight to the conversation, which is what he wants when he already
+   knows what the claim says. */
+function ClaimMark({ claim, onToggle, onOpen }) {
+  return html`<span>
+    <span class=${'mark ' + (MARK_CLASS[claim.grade] || 'm-low')}
+      role="button" tabIndex="0" title=${GRADE_WORD[claim.grade] || claim.grade}
+      onClick=${onToggle} />
+    ${claim.discussion ? html`<span class="talked" role="button" tabIndex="0"
+      title="Open the conversation about this claim" onClick=${onOpen}
+      >${I('forum')}${claim.discussion.messageCount || ''}</span>` : null}
+  </span>`;
+}
+
+/* Asking about one claim -- the demo's ClaimDrawer. It is a drawer over the
+   chapter rather than a screen instead of it, which is his review's actual
+   complaint: leaving the text to ask about one sentence in it loses the
+   sentence. A claim that already has a conversation reopens that one; a claim
+   that does not gets `NewThread`, which creates nothing until he sends. */
+function ClaimDrawer({ claim, where, close, onStarted }) {
+  const [closing, setClosing] = useState(false);
+  const shut = () => { setClosing(true); setTimeout(close, 210); };
+  const title = claim.text.length > 80 ? claim.text.slice(0, 80).replace(/\s+\S*$/, '') + '…' : claim.text;
   return html`
-    <button onClick=${back} style="background:none;border:0;padding:4px 0 10px;
-      color:var(--primary);font:500 13px Roboto,sans-serif;cursor:pointer">‹ Back to chapter</button>
-    <${NewThread} title=${claim.text.length > 80 ? claim.text.slice(0, 80).replace(/\s+\S*$/, '') + '…' : claim.text} about=${{ kind: 'claim', text: claim.text, grade: claim.grade, where }} />`;
+    <div class=${'scrim drawerscrim' + (closing ? ' out' : '')} onClick=${shut}></div>
+    <div class=${'drawer' + (closing ? ' out' : '')}>
+      <div class="grab" onClick=${shut}></div>
+      <div class="drawerchat">
+        ${claim.discussion
+          ? html`<${Discussion} id=${claim.discussion.id} />`
+          : html`<${NewThread} title=${title} onStarted=${onStarted}
+              about=${{ kind: 'claim', text: claim.text, grade: claim.grade, where, claimId: claim.id }} />`}
+      </div>
+    </div>`;
 }
 
 /* The Discuss button over a course, chapter or workshop project -- the demo's
