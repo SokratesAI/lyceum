@@ -1226,8 +1226,6 @@ function App() {
   const top = stack[stack.length - 1];
   const tab = stack[0].kind;
 
-  /* The phone's back button: one history entry stands in for "there is somewhere
-     to go back to". Popping it pops one page; it is re-armed while the stack is deep. */
   /* An overlay that can hold typed text -- Discuss, the note sheet, rename --
      gets a history entry of its own, so back closes the overlay and leaves the
      page where it is. Until this existed back did both at once and the text in
@@ -1240,6 +1238,8 @@ function App() {
   useEffect(() => {
     if (overlayOpen && !overlayArmed.current) { history.pushState({ lyceumOverlay: 1 }, ''); overlayArmed.current = true; }
   }, [overlayOpen]);
+  /* The phone's back button: one history entry stands in for "there is somewhere
+     to go back to". Popping it pops one page; it is re-armed while the stack is deep. */
   useEffect(() => {
     const onPop = () => {
       if (overlayArmed.current) {
