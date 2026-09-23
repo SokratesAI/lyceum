@@ -217,6 +217,20 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
         return res.status(404).json({ error: "no such chapter" });
       }
       const paragraphs = paragraphsOf(doc.body ?? "");
+      // The conversation he already had about a claim, if there is one, so the
+      // mark can carry a badge and "Ask about this" can reopen it instead of
+      // starting a second thread beside the first. `messageCount` is the count
+      // written by the last read of that thread -- Agora holds the transcript
+      // and counting all of them here would be one call per claim on every
+      // chapter load, so the badge is a number the drawer refreshes rather
+      // than one this route measures.
+      const talked = new Map<string, { id: string; messageCount: number }>();
+      for (const d of await couch.allDocs("discussion:")) {
+        const cid = d.about?.claimId;
+        if (typeof cid === "string" && cid && !talked.has(cid)) {
+          talked.set(cid, { id: d._id, messageCount: d.messageCount ?? 0 });
+        }
+      }
       const claims = (await couch.allDocs(`claim:${doc._id.slice("chapter:".length)}:`))
         .sort(byOrder)
         .map((claim) => ({
@@ -228,6 +242,7 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
           sourceIds: claim.sourceIds ?? [],
           checkedAgainst: claim.checkedAgainst ?? null,
           paragraph: anchorClaim(paragraphs, claim),
+          discussion: talked.get(claim._id) ?? null,
         }));
       // Just the sources these claims cite, titled. The trace names the source
       // it was checked against, and an id is not a name.
@@ -390,18 +405,27 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
    * about, so his first message can be "why?" rather than a paste. `null` for
    * an ordinary thread; `undefined` for a body this refuses. */
   const GRADES = ["high", "moderate", "low", "ungrounded"];
-  function aboutOf(raw: any): { kind: string; text: string; grade?: string; where?: string } | null | undefined {
+  type About = { kind: string; text: string; grade?: string; where?: string; claimId?: string };
+  function aboutOf(raw: any): About | null | undefined {
     if (raw == null) return null;
     if (typeof raw !== "object") return undefined;
     const kind = raw.kind === "claim" || raw.kind === "chapter" || raw.kind === "project" ? raw.kind : null;
     const text = typeof raw.text === "string" ? raw.text.trim() : "";
     if (!kind || !text || text.length > MAX_TEXT) return undefined;
-    const out: { kind: string; text: string; grade?: string; where?: string } = { kind, text };
+    const out: About = { kind, text };
     if (typeof raw.grade === "string" && GRADES.includes(raw.grade)) out.grade = raw.grade;
     if (typeof raw.where === "string" && raw.where.trim()) out.where = raw.where.trim().slice(0, 200);
+    // The claim's own id, so that "Ask about this" finds the conversation he
+    // already had rather than starting a second one beside it. Only a claim
+    // has one; a chapter or project thread carries none and is looked up by
+    // nothing. Kept off `aboutLine` deliberately -- an internal id tells
+    // Aristoteles nothing the claim text does not already say.
+    if (kind === "claim" && typeof raw.claimId === "string" && raw.claimId.trim()) {
+      out.claimId = raw.claimId.trim().slice(0, 200);
+    }
     return out;
   }
-  const aboutLine = (a: { kind: string; text: string; grade?: string; where?: string }) =>
+  const aboutLine = (a: About) =>
     a.kind === "claim"
       ? `He opened this discussion from one claim${a.where ? ` in "${a.where}"` : ""}` +
         `${a.grade ? `, graded ${a.grade}` : ""}. The claim: "${a.text}"`
@@ -504,6 +528,13 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
       // that renders as nothing, and judging by the visible list would settle
       // the page while a reply was on its way, leaving the answer unseen
       // until a reload.
+      // The badge on the claim reads this number, and this is the only place
+      // that knows it -- so it is written back when it moves, and not when it
+      // has not, because a put per poll on a thread nobody is typing in is a
+      // write loop for a number that did not change.
+      if (doc.about?.claimId && doc.messageCount !== messages.length) {
+        await couch.put({ ...doc, messageCount: messages.length });
+      }
       const last = raw[raw.length - 1];
       res.json({
         discussion: { id: doc._id, title: doc.title, about: doc.about ?? null, opened: doc.opened ?? null, project: doc.project ?? null },

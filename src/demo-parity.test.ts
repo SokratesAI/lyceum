@@ -166,3 +166,61 @@ describe("navigation matches the approved demo (issue #268)", () => {
     expect(dead, `patterns that no longer match demo/app.js: ${dead.join("; ")}`).toEqual([]);
   });
 });
+
+/* Issue #270, the claim drawer. Same one-directional shape as NAV above, and
+   for the same reason: the parity checks at the top of this file compare which
+   icons and buttons a screen *has*, and a drawer is about where a screen puts
+   them. "Ask about this" had every control the demo had while still replacing
+   the chapter with a page, which is the thing he asked to be changed. */
+const DRAWER: [string, RegExp][] = [
+  ["a drawer element, so the conversation sits over the chapter rather than instead of it",
+    /class=\$\{['"]drawer['"] ?\+/],
+  ["its own scrim, so the chapter is still visible underneath",
+    /scrim drawerscrim/],
+  ["a grab handle that closes it, which is the only affordance the demo gives",
+    /class="grab" onClick=\$\{shut\}/],
+  ["a closing animation, so it slides out rather than vanishing",
+    /setClosing\(true\); ?setTimeout\(close, ?2\d\d\)/],
+  ["a scrolling chat region inside the drawer",
+    /class="drawerchat"/],
+  ["a badge on a claim that has been talked about",
+    /class="talked"/],
+  ["a message count in that badge, so it says how much was said and not merely that something was",
+    /messageCount/],
+  ["the button naming what it opens once a conversation exists",
+    /['"]Open conversation['"]/],
+];
+
+describe("the per-claim drawer matches the approved demo (issue #270)", () => {
+  it.each(DRAWER)("public/app.js has %s", (_what, pattern) => {
+    expect(pattern.test(real)).toBe(true);
+  });
+
+  /* Same self-check as NAV: a pattern that cannot match the demo is measuring
+     nothing, and a row of those reads exactly like a row of passing checks.
+     One exemption, named rather than omitted -- `messageCount` is a server
+     field, and the demo counts a fixture array in the browser
+     (`CLAIM_STORE[k].length`), so demanding it of the demo would be the
+     guaranteed negative this check exists to catch. */
+  const ONLY_IN_THE_REAL_APP = new Set([
+    "a message count in that badge, so it says how much was said and not merely that something was",
+  ]);
+  it("every pattern above that the demo should carry still matches it", () => {
+    const dead = DRAWER
+      .filter(([what]) => !ONLY_IN_THE_REAL_APP.has(what))
+      .filter(([, p]) => !p.test(demo))
+      .map(([what]) => what);
+    expect(dead, `patterns that no longer match demo/app.js: ${dead.join("; ")}`).toEqual([]);
+  });
+
+  it("the exemption names a check that is actually in the list above", () => {
+    const names = new Set(DRAWER.map(([what]) => what));
+    expect([...ONLY_IN_THE_REAL_APP].filter((n) => !names.has(n))).toEqual([]);
+  });
+
+  /* The complaint itself, stated as a negative: the chapter must no longer
+     swap itself out for the conversation. */
+  it("the chapter no longer returns a page instead of the reading", () => {
+    expect(/if \(asking\) return html`<\$\{ClaimTalk\}/.test(real)).toBe(false);
+  });
+});
