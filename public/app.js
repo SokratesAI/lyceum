@@ -649,6 +649,11 @@ const clozeOk = (typed, answer) => {
   return t === a || a.includes(t) || t.includes(a);
 };
 
+/* An answer's id, made where the answer is, so a re-send is the same answer
+   rather than a second one. Kept to characters the server's id pattern allows. */
+let answerSeq = 0;
+const answerId = () => `${Date.now().toString(36)}-${(answerSeq += 1).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 const CHOICE = ['multiple_choice', 'true_false'];
 const TYPED = ['written', 'design'];
 const KIND = {
@@ -667,19 +672,26 @@ function Practice({ slug, onClose, onAsk }) {
   const [shown, setShown] = useState(false);
   const [missed, setMissed] = useState([]);
   const [log, setLog] = useState([]);
-  const sent = useRef(false);
+  const sent = useRef(0);  // how many of `log` the server has confirmed
 
   const cards = (data && data.cards) || [];
   const over = cards.length > 0 && i >= cards.length;
 
-  /* Reported once, when the session is over rather than per card: the only
-     reader is the ordering of the next session, and a failed write costs him
-     nothing he can see, so it must not be able to break the end screen. */
+  /* Reported as each card is answered, not once at the end. Reporting at the
+     end lost the whole session to anything that closed the deck early -- the
+     back button, the phone ringing, the tab being dropped -- and on a phone
+     that is most sessions. `sent` is how many of `log` have landed; a failed
+     post leaves it where it was, so the next answer re-sends what did not get
+     through. Answers carry an id so re-sending cannot file one twice. Still
+     fire-and-forget: a failed write must not be able to break the deck. */
   useEffect(() => {
-    if (!over || sent.current || !log.length) return;
-    sent.current = true;
-    postJSON('/api/practice/answers', { answers: log }).catch(() => {});
-  }, [over, log]);
+    if (sent.current >= log.length) return;
+    const pending = log.slice(sent.current);
+    const upto = log.length;
+    postJSON('/api/practice/answers', { answers: pending })
+      .then(() => { sent.current = Math.max(sent.current, upto); })
+      .catch(() => {});
+  }, [log]);
 
   if (loading) return html`<${Loading} />`;
   if (error) return html`<${Failed} error=${error} />`;
@@ -731,7 +743,7 @@ function Practice({ slug, onClose, onAsk }) {
   const correct = typed ? true : choice ? c.options[sel] === c.answer : clozeOk(text, c.answer);
   const ready = choice ? sel !== null : text.trim().length > 0;
 
-  const record = (result) => setLog((l) => [...l, { cardId: c.id, result }]);
+  const record = (result) => setLog((l) => [...l, { cardId: c.id, result, answerId: answerId() }]);
   const next = (result) => {
     record(result);
     if (result === 'missed') setMissed((m) => [...m, i]);
