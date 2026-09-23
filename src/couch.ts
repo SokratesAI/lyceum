@@ -13,6 +13,8 @@
  * state only"). Nothing calls it with a `course:`/`chapter:`/`source:` id.
  */
 
+import { DB_TIMEOUT_MS, deadline } from "./http.js";
+
 export type Doc = Record<string, any>;
 
 export interface Couch {
@@ -44,7 +46,7 @@ export const httpCouch: Couch = {
       `${base()}/_all_docs?include_docs=true` +
       `&startkey=${encodeURIComponent(JSON.stringify(prefix))}` +
       `&endkey=${encodeURIComponent(JSON.stringify(prefix + "￰"))}`;
-    const res = await fetch(url, { headers: { Authorization: auth() } });
+    const res = await fetch(url, deadline(DB_TIMEOUT_MS, { headers: { Authorization: auth() } }));
     if (!res.ok) throw new Error(`CouchDB ${res.status} on ${prefix}`);
     const body = (await res.json()) as { rows: { doc: Doc }[] };
     return body.rows.map((r) => r.doc);
@@ -54,25 +56,25 @@ export const httpCouch: Couch = {
       `${base()}/_all_docs` +
       `?startkey=${encodeURIComponent(JSON.stringify(prefix))}` +
       `&endkey=${encodeURIComponent(JSON.stringify(prefix + "￰"))}`;
-    const res = await fetch(url, { headers: { Authorization: auth() } });
+    const res = await fetch(url, deadline(DB_TIMEOUT_MS, { headers: { Authorization: auth() } }));
     if (!res.ok) throw new Error(`CouchDB ${res.status} on ${prefix}`);
     const body = (await res.json()) as { rows: { id: string }[] };
     return body.rows.map((r) => r.id);
   },
   async put(doc: Doc) {
-    const res = await fetch(`${base()}/${encodeURIComponent(doc._id)}`, {
+    const res = await fetch(`${base()}/${encodeURIComponent(doc._id)}`, deadline(DB_TIMEOUT_MS, {
       method: "PUT",
       headers: { Authorization: auth(), "content-type": "application/json" },
       body: JSON.stringify(doc),
-    });
+    }));
     if (!res.ok) throw new Error(`CouchDB ${res.status} writing ${doc._id}`);
     const body = (await res.json()) as { rev: string };
     return { ...doc, _rev: body.rev };
   },
   async get(id: string) {
-    const res = await fetch(`${base()}/${encodeURIComponent(id)}`, {
+    const res = await fetch(`${base()}/${encodeURIComponent(id)}`, deadline(DB_TIMEOUT_MS, {
       headers: { Authorization: auth() },
-    });
+    }));
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`CouchDB ${res.status} on ${id}`);
     return (await res.json()) as Doc;
