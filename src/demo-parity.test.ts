@@ -115,3 +115,54 @@ describe("the live app carries every control of the approved demo", () => {
     expect(buttonLabels(demo).size).toBeGreaterThan(5);
   });
 });
+
+/* Controls are what a screen has; navigation is what it does, and the checks
+   above cannot see it. The owner asked for the demo's navigation by name
+   (issue #268): "swiping right on any inner page slides it off to uncover the
+   page underneath, and the phone back button pops one page without leaving the
+   app". The port landed, and nothing guarded it -- the whole nav stack could be
+   deleted from public/app.js and all 102 tests above would still pass.
+
+   Same one-directional shape as the controls: each row names one piece of the
+   demo's navigation, and the real app must carry it whenever the demo does.
+   Anchored on the demo rather than hardcoded so that a demo which drops a piece
+   stops demanding it, the way an exemption does. */
+const NAV: [string, RegExp][] = [
+  ["a popstate listener, so the phone's back button is handled at all",
+    /addEventListener\(\s*['"]popstate['"]/],
+  ["one history entry pushed while the stack is deep, so back has something to pop",
+    /history\.pushState\(/],
+  ["back() going through history.back(), so the gesture and the button pop the same way",
+    /history\.back\(\)/],
+  ["a stack popped by one entry, not reset to the tab",
+    /s\.length > 1 \? s\.slice\(0, ?-1\) : s/],
+  ["touch handlers on the stage, so the gesture works anywhere on the page",
+    /onTouchStart=\$\{[^}]+\}[\s\S]{0,120}?onTouchMove=/],
+  ["a cancelled touch treated as an end, so a lifted finger never leaves a page half-slid",
+    /onTouchCancel=/],
+  ["an axis lock, so a vertical scroll does not start a back-swipe",
+    /Math\.abs\(mx\) > Math\.abs\(my\)/],
+  ["right-only travel -- a leftward drag must not move the page",
+    /Math\.max\(0, ?mx\)/],
+  ["a distance-or-speed threshold, so a short drag springs back",
+    /d\.dx > W\(\) \* 0\.33 \|\| speed > 0\.6/],
+  ["the page under the top one drawn behind it, so something is uncovered",
+    /under \? page\(under,/],
+  ["the top page translated by the drag, which is the slide itself",
+    /transform: ?dx \? `translateX\(\$\{dx\}px\)`/],
+];
+
+describe("navigation matches the approved demo (issue #268)", () => {
+  it.each(NAV)("public/app.js has %s", (_what, pattern) => {
+    expect(pattern.test(real)).toBe(true);
+  });
+
+  /* The rule this file already lives by, applied to itself: a probe that cannot
+     match anything has a guaranteed negative, and eleven guaranteed negatives
+     read exactly like eleven passing checks. Each pattern must find the demo
+     too, or it is measuring nothing and the row above is decoration. */
+  it("every pattern above still matches the demo it was taken from", () => {
+    const dead = NAV.filter(([, p]) => !p.test(demo)).map(([what]) => what);
+    expect(dead, `patterns that no longer match demo/app.js: ${dead.join("; ")}`).toEqual([]);
+  });
+});
