@@ -10,7 +10,7 @@ import type { Couch, Doc } from "./couch.js";
 import { OWNER, personaId, type Agora } from "./agora.js";
 import { briefing, parseMemories, parseRecalls, stripMarkers, upsert } from "./memory.js";
 import { anchorClaim, paragraphsOf } from "./claims.js";
-import { BinaryFile, listProjects, projectPage, readVaultFile, STAGES, type StageDiscussion } from "./workshop.js";
+import { BinaryFile, listProjects, projectCard, projectPage, readVaultFile, STAGES, type StageDiscussion } from "./workshop.js";
 
 const byOrder = (a: Doc, b: Doc) => (a.order ?? 0) - (b.order ?? 0);
 
@@ -83,6 +83,8 @@ const THREAD_LIMIT = 200;
 /** A saved tool output is a whole Aristoteles answer, which runs past a note's
  *  cap; this only stops a runaway body, CouchDB takes far more. */
 const MAX_FILE_TEXT = 200_000;
+/** A project name or folder path, long enough for a real name and short enough to draw. */
+const MAX_TITLE = 200;
 
 /** "2026-09-21 1116", Oslo wall time: the owner's clock, and sortable. */
 export function osloStamp(now = new Date()): string {
@@ -669,6 +671,41 @@ export function apiRouter(couch: Couch, agora: Agora, vault: VaultStore = httpVa
         opened,
       });
       res.status(201).json({ project: { slug, title, stage: "problem" }, discussion: { id: doc._id, title, conversationId, about, opened } });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /* Rename a project, and move where its files live, from the phone -- review
+   * item B15 (issue #282). Until now both were a hand edit in CouchDB: the
+   * first real project to outgrow its placeholder name had to be renamed by a
+   * cycle with database access, which is not something he can do. `root` only
+   * re-points the project at a vault folder; it does not move the files, so a
+   * root with nothing under it lists no files rather than failing. */
+  router.patch("/workshop/:slug", async (req, res, next) => {
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(req.body ?? {}, k);
+    if (!has("title") && !has("root")) return res.status(400).json({ error: "nothing to change" });
+    let title: string | undefined;
+    if (has("title")) {
+      title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      if (!title) return res.status(400).json({ error: "a project needs a name" });
+      if (title.length > MAX_TITLE) return res.status(400).json({ error: "that name is too long" });
+    }
+    let root: string | undefined;
+    if (has("root")) {
+      root = typeof req.body.root === "string" ? req.body.root.trim().replace(/^\/+|\/+$/g, "") : "";
+      if (!root) return res.status(400).json({ error: "a project needs a folder" });
+      if (root.length > MAX_TITLE) return res.status(400).json({ error: "that folder is too long" });
+      const parts = root.split("/");
+      if (parts.some((seg) => seg === "" || seg === "." || seg === ".." || seg.includes("\\"))) {
+        return res.status(400).json({ error: "that is not a folder path" });
+      }
+    }
+    try {
+      const p = await couch.get(`project:${req.params.slug}`);
+      if (!p) return res.status(404).json({ error: "no such project" });
+      const doc = await couch.put({ ...p, ...(title === undefined ? {} : { title }), ...(root === undefined ? {} : { root }) });
+      res.json({ project: { ...projectCard(doc), root: doc.root } });
     } catch (err) {
       next(err);
     }
